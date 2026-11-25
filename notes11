@@ -1,0 +1,611 @@
+Pydantic, Advanced Request Validation & Response Models
+Week 2 · Day 11 of 45
+Hands-on development
+Yesterday, you built GET and POST endpoints for your AI Platform Gateway. Today, we'll make those endpoints more reliable by learning how to validate incoming data, define optional fields, handle nested JSON and control API responses.
+Today's objective: Build a robust request-validation layer for POST /requests, similar to what you'd expect in a professional AI backend.
+2. What is Pydantic?
+Pydantic is a Python library that validates data using Python type annotations.
+Imagine a user submits this request to your AI platform:
+JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI engineering",
+    "max_tokens": 500
+}
+Your backend should check:
+•	Is model provided?
+•	Is prompt a string?
+•	Is the prompt empty?
+•	Is max_tokens a valid integer?
+•	Is max_tokens within the allowed range?
+Pydantic performs these checks automatically when FastAPI receives a request body defined by a Pydantic model.
+Without validation vs with validation
+Without validation	With Pydantic
+Manual checking	Automatic validation
+More repetitive code	Reusable schemas
+Inconsistent errors	Structured validation errors
+Difficult to maintain	Easier to maintain
+3. Understand the important Pydantic concepts
+A. BaseModel
+from pydantic import BaseModel
+
+class AIRequest(BaseModel):
+    model: str
+    prompt: str
+    max_tokens: int
+
+BaseModel is the foundation for creating data-validation classes.
+B. Required fields
+from pydantic import BaseModel, Field
+
+class AIRequest(BaseModel):
+    model: str = Field(...)
+    prompt: str = Field(...)
+
+... means the field is required.
+C. Default values
+
+max_tokens: int = 500
+
+If the user does not provide max_tokens, the value defaults to 500.
+D. Field constraints
+
+max_tokens: int = Field(
+    default=500,
+    ge=1,
+    le=4000
+)
+
+•	ge=1: Minimum value is 1.
+•	le=4000: Maximum value is 4000.
+E. Optional fields
+temperature: float | None = None
+This field is optional and can be None.
+In modern Python, float | None expresses a value that may be either a float or None.
+4. Upgrade your project structure
+Continue using your existing project:
+D:\Gaurev\Projects\AIPlatformGateway
+Update the structure as follows:
+AIPlatformGateway/
+│
+├── main.py
+│
+├── api/
+│   ├── __init__.py
+│   └── endpoints.py
+│
+├── services/
+│   ├── __init__.py
+│   └── model_service.py
+│
+├── schemas/
+│   ├── __init__.py
+│   └── request_schema.py
+│
+├── config/
+│   ├── __init__.py
+│   └── models_config.py
+│
+└── requirements.txt
+Today, we'll primarily modify schemas/request_schema.py, api/endpoints.py and services/model_service.py.
+5. Implement advanced request schemas
+Open:
+schemas/request_schema.py
+Replace its contents with the following complete code:
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+
+class AIRequest(BaseModel):
+
+    model: str = Field(
+        ...,
+        min_length=3,
+        max_length=100,
+        description="AI model identifier"
+    )
+
+    prompt: str = Field(
+        ...,
+        min_length=5,
+        max_length=10000,
+        description="Prompt submitted by the user"
+    )
+
+    max_tokens: int = Field(
+        default=500,
+        ge=1,
+        le=4000
+    )
+
+    temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0
+    )
+
+    provider: Literal[
+        "OpenAI",
+        "Anthropic",
+        "Google"
+    ] | None = None
+
+    stream: bool = False
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt(cls, value):
+
+        cleaned_value = value.strip()
+
+        if not cleaned_value:
+            raise ValueError(
+                "Prompt cannot contain only spaces"
+            )
+
+        return cleaned_value
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value):
+
+        cleaned_value = value.strip()
+
+        if not cleaned_value:
+            raise ValueError(
+                "Model name cannot be empty"
+            )
+
+        return cleaned_value
+
+
+class AIResponse(BaseModel):
+
+    request_id: str
+
+    model: str
+
+    status: str
+
+    input_tokens: int
+
+    output_tokens: int
+
+    total_tokens: int
+
+    message: str
+
+    provider: str | None = None
+
+
+class PromptValidationRequest(BaseModel):
+
+    prompt: str = Field(
+        ...,
+        min_length=5,
+        max_length=10000
+    )
+
+
+class PromptValidationResponse(BaseModel):
+
+    valid: bool
+
+    prompt_length: int
+
+    message: str
+
+Understand what changed
+Field	Purpose
+model	AI model identifier
+prompt	User's prompt
+max_tokens	Maximum output token limit
+temperature	Controls randomness in generation
+provider	Optional provider selection
+stream	Whether streaming is requested
+Important: temperature is a generation parameter; a lower value generally produces more predictable outputs, while a higher value allows more variation. The actual model must support the parameter and range.
+What is field_validator?
+This is a Pydantic v2 feature.
+For example:
+@field_validator("prompt")
+@classmethod
+def validate_prompt(cls, value):
+    cleaned_value = value.strip()
+
+    if not cleaned_value:
+        raise ValueError("Prompt cannot be empty")
+
+    return cleaned_value
+
+It allows you to write custom validation rules.
+Here, even if someone submits:
+{
+    "prompt": "     "
+}
+
+Pydantic rejects the request.
+6. Implement nested JSON validation
+AI platform requests often contain more than simple fields. For example, a request might include generation settings, safety settings and metadata.
+Add this additional code to the bottom of schemas/request_schema.py:
+class GenerationConfig(BaseModel):
+
+    max_tokens: int = Field(
+        default=500,
+        ge=1,
+        le=4000
+    )
+
+    temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0
+    )
+
+
+class AdvancedAIRequest(BaseModel):
+
+    model: str
+
+    prompt: str
+
+    generation: GenerationConfig
+
+    metadata: dict[str, str] = Field(
+        default_factory=dict
+    )
+
+Example nested JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI Platform Engineering",
+    "generation": {
+        "max_tokens": 1000,
+        "temperature": 0.5
+    },
+    "metadata": {
+        "user_id": "user_101",
+        "application": "AI Gateway"
+    }
+}
+
+Pydantic validates the nested generation object using GenerationConfig.
+default_factory=dict creates a new empty dictionary when metadata isn't provided.
+Why is this useful? Enterprise APIs often have nested request structures. Learning to validate them is important when designing AI gateways, model configuration APIs and document-processing services.
+7. Upgrade the AI request service
+Open:
+services/model_service.py
+Replace the code with:
+import uuid
+
+from config.models_config import AVAILABLE_MODELS
+
+from schemas.request_schema import (
+    AIRequest,
+    AIResponse
+)
+
+
+def get_all_models():
+
+    return list(AVAILABLE_MODELS.values())
+
+
+def get_model_by_id(model_id: str):
+
+    return AVAILABLE_MODELS.get(model_id)
+
+
+def process_ai_request(request: AIRequest):
+
+    model = get_model_by_id(request.model)
+
+    if model is None:
+        return None
+
+    # Validate provider if the caller supplied one
+    if (
+        request.provider is not None
+        and request.provider != model["provider"]
+    ):
+        return "provider_mismatch"
+
+    request_id = f"req_{uuid.uuid4().hex[:8]}"
+
+    # Illustrative token estimation only
+    input_tokens = len(request.prompt.split())
+
+    output_tokens = min(
+        request.max_tokens,
+        max(1, int(input_tokens * 1.5))
+    )
+
+    total_tokens = input_tokens + output_tokens
+
+    response = AIResponse(
+        request_id=request_id,
+        model=request.model,
+        status="success",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        message="Request validated and simulated successfully",
+        provider=model["provider"]
+    )
+
+    return response
+
+Notice the new provider validation.
+For example, if someone submits:
+JSON
+{
+    "model": "gpt-4o",
+    "provider": "Google",
+    "prompt": "Explain AI engineering"
+}
+
+The request should be rejected because the selected model belongs to OpenAI, not Google.
+8. Upgrade your API endpoints
+Open:
+api/endpoints.py
+Replace it with:
+from fastapi import APIRouter, HTTPException
+
+from services.model_service import (
+    get_all_models,
+    get_model_by_id,
+    process_ai_request
+)
+
+from schemas.request_schema import (
+    AIRequest,
+    AIResponse,
+    PromptValidationRequest,
+    PromptValidationResponse
+)
+
+
+router = APIRouter()
+
+
+@router.get("/models")
+def list_models():
+
+    models = get_all_models()
+
+    return {
+        "count": len(models),
+        "models": models
+    }
+
+
+@router.get("/models/{model_id}")
+def retrieve_model(model_id: str):
+
+    model = get_model_by_id(model_id)
+
+    if model is None:
+        raise HTTPException(
+            status_code=404,
+            detail="AI model not found"
+        )
+
+    return model
+
+
+@router.post(
+    "/requests",
+    response_model=AIResponse
+)
+def create_ai_request(request: AIRequest):
+
+    response = process_ai_request(request)
+
+    if response is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Requested AI model does not exist"
+        )
+
+    if response == "provider_mismatch":
+        raise HTTPException(
+            status_code=400,
+            detail="Selected provider does not match the model"
+        )
+
+    return response
+
+
+@router.post(
+    "/requests/validate",
+    response_model=PromptValidationResponse
+)
+def validate_prompt(request: PromptValidationRequest):
+
+    cleaned_prompt = request.prompt.strip()
+
+    return PromptValidationResponse(
+        valid=True,
+        prompt_length=len(cleaned_prompt),
+        message="Prompt validation successful"
+    )
+
+We've introduced an additional endpoint:
+POST /requests/validate
+This endpoint checks the prompt and returns its character count.
+9. Update the main application
+Your existing main.py can remain:
+from fastapi import FastAPI
+
+from api.endpoints import router
+
+
+app = FastAPI(
+    title="AI Platform Gateway",
+    description="API for managing AI models and processing AI requests",
+    version="1.1.0"
+)
+
+
+@app.get("/")
+def home():
+
+    return {
+        "message": "Welcome to AI Platform Gateway",
+        "status": "running"
+    }
+
+
+@app.get("/health")
+def health_check():
+
+    return {
+        "status": "healthy",
+        "service": "AI Platform Gateway"
+    }
+
+
+app.include_router(router)
+
+Your config/models_config.py from Day 10 does not need to change.
+10. Test your implementation in Swagger
+Run your application:
+fastapi dev main.py
+Open:
+Open Swagger UI
+Test A — Valid AI request
+Endpoint:
+POST /requests
+Request:
+JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI Platform Engineering",
+    "max_tokens": 500,
+    "temperature": 0.7,
+    "provider": "OpenAI",
+    "stream": false
+}
+Expected response structure:
+JSON
+{
+    "request_id": "req_a1b2c3d4",
+    "model": "gpt-4o",
+    "status": "success",
+    "input_tokens": 4,
+    "output_tokens": 6,
+    "total_tokens": 10,
+    "message": "Request validated and simulated successfully",
+    "provider": "OpenAI"
+}
+
+The request ID and token counts will vary.
+Test B — Invalid temperature
+JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI Platform Engineering",
+    "temperature": 5
+}
+
+Expected: 422 Unprocessable Entity.
+Reason: temperature must be between 0 and 2.
+Test C — Provider mismatch
+JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI Platform Engineering",
+    "provider": "Google"
+}
+
+Expected: 400 Bad Request.
+Test D — Empty prompt
+JSON
+{
+    "model": "gpt-4o",
+    "prompt": "     "
+}
+
+Expected: 422 Unprocessable Entity.
+Test E — Prompt validation endpoint
+Endpoint:
+POST /requests/validate
+Request:
+JSON
+{
+    "prompt": "Explain AI Platform Engineering"
+}
+
+Expected response:
+JSON
+{
+    "valid": true,
+    "prompt_length": 32,
+    "message": "Prompt validation successful"
+}
+
+11. Important concepts for AI Platform Engineers
+Concept	What it means
+Schema validation	Checking whether incoming data follows a defined structure
+Serialization	Converting Python data into a transferable format such as JSON
+Deserialization	Converting incoming JSON into structured Python data
+Custom validator	Your own validation rule
+Nested model	A Pydantic model inside another model
+Response model	Defines the structure of API output
+Type annotation	Specifies the expected data type
+How this applies to real AI platforms
+Consider a production AI gateway that supports multiple providers.
+It may need to validate:
+•	Which AI model is requested.
+•	Which provider owns that model.
+•	Whether token limits are supported.
+•	Whether streaming is enabled.
+•	Whether the user has supplied valid generation parameters.
+•	Whether metadata follows the expected structure.
+Pydantic provides a strong foundation for these checks. Authentication, authorization, rate limits and provider-specific capabilities will be added in later stages.
+12. Day 11 interview questions
+Try answering these without looking at the explanations.
+Q1. What is Pydantic, and why does FastAPI use it?
+Pydantic validates and structures Python data using type annotations. FastAPI uses it to validate incoming request bodies and produce structured responses.
+Q2. What is the difference between BaseModel and Field?
+BaseModel creates the data model. Field adds constraints, defaults, descriptions and other field-level configuration.
+Q3. What is a custom field validator?
+It is a function that checks or transforms a field's value according to application-specific rules.
+Q4. What is a nested Pydantic model?
+It is a Pydantic model used as a field inside another model. It allows structured and reusable validation of complex JSON.
+Q5. What is the difference between 400 and 422?
+•	400: The request is understood but cannot be processed due to an application-level problem.
+•	422: The request data fails validation.
+Q6. What is response_model in FastAPI?
+It specifies the expected response structure and allows FastAPI to validate and serialize the returned data.
+Q7. What is the difference between str | None = None and str?
+The first allows a string or None and is optional because it has a default. The second is a required string field.
+13. Today's practical assignments
+Complete these three tasks independently:
+1.	Add a top_p field to AIRequest, with a default of 1.0 and a range of 0 to 1.
+2.	Add a custom validator that rejects prompts containing only whitespace.
+3.	Create a new endpoint GET /models/provider/{provider_name} that returns models belonging to a selected provider.
+14. Day 11 completion tracker
+Day 11 progress
+0/10
+Understand BaseModel and Field
+Add optional fields and default values
+Implement custom field validators
+Implement nested Pydantic models
+Upgrade AIRequest and AIResponse
+Add provider mismatch validation
+Test all five request scenarios
+Test POST /requests/validate
+Answer the seven interview questions
+Complete the three coding assignments
+15. Day 12 preview — SQL & Database Integration
+Tomorrow, we'll start connecting the AI Platform Gateway to a real database.
+Topics:
+•	SQL fundamentals for backend engineers.
+•	PostgreSQL installation and connection.
+•	SQLAlchemy ORM.
+•	Database models and tables.
+•	Saving AI requests into PostgreSQL.
+•	Retrieving request history through API endpoints.
+The milestone: By the end of Day 12, your AI Gateway will begin storing request records persistently instead of keeping everything in memory.
+Before moving ahead: Make sure POST /requests and its validation tests work in Swagger.
+
