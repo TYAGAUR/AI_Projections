@@ -1,0 +1,1271 @@
+SQLAlchemy CRUD, Database Relationships & Usage Analytics
+Week 2 · Day 13 of 45
+Hands-on development
+Yesterday, you connected your AI Platform Gateway to PostgreSQL and saved AI requests permanently.
+Today, we'll make the database layer more powerful by implementing CRUD operations, filtering, pagination, database relationships and usage analytics.
+By the end of today, your platform will be able to:
+1.	Create, read, update and delete AI request records.
+2.	Filter requests by model and status.
+3.	Retrieve request history with pagination.
+4.	Understand database relationships and foreign keys.
+5.	Calculate total AI requests and token usage using SQLAlchemy.
+6.	Build a /usage analytics endpoint.
+2. Understand CRUD operations
+CRUD represents four basic database operations.
+Operation	Meaning	SQL	SQLAlchemy
+Create	Insert a record	INSERT	db.add()
+Read	Retrieve records	SELECT	db.query()
+Update	Modify a record	UPDATE	Modify object + commit()
+Delete	Remove a record	DELETE	db.delete()
+In your AI platform, these operations will be used to manage AI request records.
+For example:
+•	Create: Save a new AI request.
+•	Read: Retrieve a user's request history.
+•	Update: Change a request's status.
+•	Delete: Remove an unwanted request record.
+
+3. Understand database relationships
+Imagine your platform has 100 users.
+Each user can submit multiple AI requests.
+A typical database design looks like this:
+Database relationship: One user → Many AI requests
+users
+id — Primary key
+name
+email
+
+One-to-many
+ai_requests
+id — Primary key
+request_id
+user_id — Foreign key
+model
+prompt
+total_tokens
+One user can have multiple AI requests, but each request belongs to one user.
+This is called a one-to-many relationship.
+Today, we'll introduce a simple user table so you can implement this relationship in SQLAlchemy.
+4. Update your project structure
+Continue using:
+</>Plain text
+D:\Gaurev\Projects\AIPlatformGateway
+Update the structure:
+</>Plain text
+AIPlatformGateway/
+│
+├── main.py
+├── .env
+├── .gitignore
+├── requirements.txt
+│
+├── api/
+│   ├── __init__.py
+│   └── endpoints.py
+│
+├── config/
+│   ├── __init__.py
+│   ├── models_config.py
+│   └── database.py
+│
+├── models/
+│   ├── __init__.py
+│   ├── request_model.py
+│   └── user_model.py
+│
+├── schemas/
+│   ├── __init__.py
+│   └── request_schema.py
+│
+└── services/
+    ├── __init__.py
+    ├── model_service.py
+    ├── request_service.py
+    └── analytics_service.py
+
+We'll retain your existing database connection and build on it.
+5. Create a user database model
+Open:
+models/user_model.py
+Add:
+</>Python
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import relationship
+
+from config.database import Base
+
+
+class User(Base):
+
+    __tablename__ = "users"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    name = Column(
+        String(100),
+        nullable=False
+    )
+
+    email = Column(
+        String(150),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    requests = relationship(
+        "AIRequestRecord",
+        back_populates="user"
+    )
+
+Understand the code
+•	__tablename__: Database table name.
+•	primary_key=True: Unique identifier.
+•	unique=True: Prevents duplicate email addresses.
+•	relationship(): Defines the Python-side relationship with another table.
+•	back_populates: Connects the relationship on both models.
+6. Add the foreign key to your AI request model
+Open:
+models/request_model.py
+Replace it with this updated version:
+</>Python
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    ForeignKey
+)
+
+from sqlalchemy.orm import relationship
+
+from config.database import Base
+
+
+class AIRequestRecord(Base):
+
+    __tablename__ = "ai_requests"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    request_id = Column(
+        String(100),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True
+    )
+
+    model = Column(
+        String(100),
+        nullable=False
+    )
+
+    provider = Column(
+        String(100),
+        nullable=True
+    )
+
+    prompt = Column(
+        Text,
+        nullable=False
+    )
+
+    status = Column(
+        String(50),
+        nullable=False
+    )
+
+    input_tokens = Column(
+        Integer,
+        default=0
+    )
+
+    output_tokens = Column(
+        Integer,
+        default=0
+    )
+
+    total_tokens = Column(
+        Integer,
+        default=0
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    user = relationship(
+        "User",
+        back_populates="requests"
+    )
+
+Notice these two additions:
+</>Python
+user_id = Column(
+    Integer,
+    ForeignKey("users.id"),
+    nullable=True
+)
+
+This creates the foreign key.
+</>Python
+user = relationship(
+    "User",
+    back_populates="requests"
+)
+
+This allows SQLAlchemy to navigate between a request and its associated user.
+Important database note: Base.metadata.create_all() does not modify an existing table to add a new column. Since you already created ai_requests on Day 12, you must migrate the existing table before running this updated model.
+For this learning project, if you have no important data to preserve, the simplest approach is to back up anything you need and recreate the development database. Alternatively, use Alembic migrations to add the user_id column while preserving records. We'll cover migrations later.
+For a fresh development database, the new table definitions will be created automatically when the application starts.
+7. Update the database for the new relationship
+Because you already created the database on Day 12, adding user_id to your Python model will not automatically change the existing PostgreSQL table.
+You have two choices:
+•	Learning project with no important data: Back up anything you need, drop and recreate ai_platform_db, then let SQLAlchemy create the tables.
+•	Preserve existing records: Use a database migration or run the following SQL in pgAdmin Query Tool.
+For the second option, execute:
+</>SQL
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL
+);
+
+ALTER TABLE ai_requests
+ADD COLUMN IF NOT EXISTS user_id INTEGER
+REFERENCES users(id);
+
+CREATE INDEX IF NOT EXISTS ix_ai_requests_user_id
+ON ai_requests(user_id);
+
+This creates the users table and adds the foreign key column without deleting your existing request records.
+For a production application, use Alembic migrations rather than manually modifying database tables.
+8. Create user and request schemas
+Open:
+schemas/request_schema.py
+Keep your existing Day 12 schemas and add these classes at the bottom:
+</>Python
+class UserCreate(BaseModel):
+
+    name: str = Field(
+        ...,
+        min_length=2,
+        max_length=100
+    )
+
+    email: str = Field(
+        ...,
+        min_length=5,
+        max_length=150
+    )
+
+
+class UserResponse(BaseModel):
+
+    id: int
+    name: str
+    email: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AIRequestUpdate(BaseModel):
+
+    status: Literal[
+        "pending",
+        "processing",
+        "success",
+        "failed",
+        "cancelled"
+    ]
+
+
+class UsageAnalyticsResponse(BaseModel):
+
+    total_requests: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_tokens: int
+
+Make sure your imports at the top of request_schema.py include:
+</>Python
+from datetime import datetime
+from typing import Literal
+
+from pydantic import (
+    BaseModel,
+    Field,
+    ConfigDict,
+    field_validator
+)
+
+These schemas define:
+•	UserCreate: Data required to register a user.
+•	UserResponse: Data returned after user creation.
+•	AIRequestUpdate: Allowed request status updates.
+•	UsageAnalyticsResponse: Structure of analytics results.
+9. Implement CRUD operations in the request service
+Open:
+services/request_service.py
+Replace the file with:
+</>Python 
+from sqlalchemy.orm import Session
+
+from models.request_model import AIRequestRecord
+from models.user_model import User
+
+
+# CREATE: Save an AI request
+def save_ai_request(db: Session, request_data, user_id=None):
+
+    new_record = AIRequestRecord(
+        request_id=request_data.request_id,
+        user_id=user_id,
+        model=request_data.model,
+        provider=request_data.provider,
+        prompt=request_data.prompt,
+        status=request_data.status,
+        input_tokens=request_data.input_tokens,
+        output_tokens=request_data.output_tokens,
+        total_tokens=request_data.total_tokens
+    )
+
+    db.add(new_record)
+    db.commit()
+    db.refresh(new_record)
+
+    return new_record
+
+
+# READ: Retrieve all requests
+def get_all_requests(db: Session, limit: int = 50, offset: int = 0):
+
+    return (
+        db.query(AIRequestRecord)
+        .order_by(AIRequestRecord.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
+# READ: Retrieve one request
+def get_request_by_id(db: Session, request_id: str):
+
+    return (
+        db.query(AIRequestRecord)
+        .filter(
+            AIRequestRecord.request_id == request_id
+        )
+        .first()
+    )
+
+
+# READ: Filter requests by model
+def get_requests_by_model(db: Session, model_name: str):
+
+    return (
+        db.query(AIRequestRecord)
+        .filter(
+            AIRequestRecord.model == model_name
+        )
+        .order_by(AIRequestRecord.id.desc())
+        .all()
+    )
+
+
+# READ: Filter requests by status
+def get_requests_by_status(db: Session, status: str):
+
+    return (
+        db.query(AIRequestRecord)
+        .filter(
+            AIRequestRecord.status == status
+        )
+        .order_by(AIRequestRecord.id.desc())
+        .all()
+    )
+
+
+# UPDATE: Update request status
+def update_request_status(
+    db: Session,
+    request_id: str,
+    new_status: str
+):
+
+    record = get_request_by_id(db, request_id)
+
+    if record is None:
+        return None
+
+    record.status = new_status
+
+    db.commit()
+    db.refresh(record)
+
+    return record
+
+
+# DELETE: Delete a request
+def delete_request(db: Session, request_id: str):
+
+    record = get_request_by_id(db, request_id)
+
+    if record is None:
+        return None
+
+    db.delete(record)
+    db.commit()
+
+    return record
+
+
+# CREATE: Register a user
+def create_user(db: Session, user_data):
+
+    new_user = User(
+        name=user_data.name,
+        email=user_data.email
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return new_user
+
+
+# READ: Retrieve a user
+def get_user_by_id(db: Session, user_id: int):
+
+    return (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
+
+Understand the CRUD workflow
+CREATE
+db.add() + db.commit()
+Insert a new database record.
+READ
+db.query()
+Retrieve records, filter and paginate results.
+UPDATE
+Modify object + db.commit()
+Change an existing database record.
+DELETE
+db.delete() + db.commit()
+Remove a database record.
+10. Build usage analytics with SQLAlchemy
+Create a new file:
+services/analytics_service.py
+Add:
+</>Python 
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+from models.request_model import AIRequestRecord
+
+
+def get_usage_analytics(db: Session):
+
+    result = db.query(
+        func.count(AIRequestRecord.id).label(
+            "total_requests"
+        ),
+
+        func.coalesce(
+            func.sum(AIRequestRecord.input_tokens), 0
+        ).label("total_input_tokens"),
+
+        func.coalesce(
+            func.sum(AIRequestRecord.output_tokens), 0
+        ).label("total_output_tokens"),
+
+        func.coalesce(
+            func.sum(AIRequestRecord.total_tokens), 0
+        ).label("total_tokens")
+
+    ).first()
+
+    return {
+        "total_requests": result.total_requests,
+        "total_input_tokens": result.total_input_tokens,
+        "total_output_tokens": result.total_output_tokens,
+        "total_tokens": result.total_tokens
+    }
+
+
+def get_model_usage(db: Session):
+
+    return (
+        db.query(
+            AIRequestRecord.model,
+            func.count(AIRequestRecord.id).label(
+                "total_requests"
+            ),
+            func.sum(
+                AIRequestRecord.total_tokens
+            ).label("total_tokens")
+        )
+        .group_by(AIRequestRecord.model)
+        .all()
+    )
+
+Understand aggregate functions
+Function	Purpose
+func.count()	Counts records
+func.sum()	Calculates total
+func.coalesce()	Replaces NULL with a specified value
+group_by()	Groups records by a column
+For example, this SQL:
+</>SQL
+SELECT
+    model,
+    COUNT(*) AS total_requests,
+    SUM(total_tokens) AS total_tokens
+FROM ai_requests
+GROUP BY model;
+
+can be implemented using SQLAlchemy as shown above.
+This is particularly useful for an AI platform because you need to monitor token consumption and model usage.
+11. Upgrade your API endpoints
+Open:
+api/endpoints.py
+Replace it with this complete version. It includes your previous endpoints plus today's CRUD, user management, filtering, pagination and analytics endpoints.
+</>Python
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Depends,
+    Query
+)
+
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+
+from config.database import get_db
+
+from services.model_service import (
+    get_all_models,
+    get_model_by_id,
+    process_ai_request
+)
+
+from services.request_service import (
+    save_ai_request,
+    get_all_requests,
+    get_request_by_id,
+    get_requests_by_model,
+    get_requests_by_status,
+    update_request_status,
+    delete_request,
+    create_user,
+    get_user_by_id
+)
+
+from services.analytics_service import (
+    get_usage_analytics,
+    get_model_usage
+)
+
+from schemas.request_schema import (
+    AIRequest,
+    AIResponse,
+    PromptValidationRequest,
+    PromptValidationResponse,
+    AIRequestHistoryResponse,
+    UserCreate,
+    UserResponse,
+    AIRequestUpdate,
+    UsageAnalyticsResponse
+)
+
+
+router = APIRouter()
+
+
+# --------------------------------
+# MODEL ENDPOINTS
+# --------------------------------
+
+@router.get("/models")
+def list_models():
+
+    models = get_all_models()
+
+    return {
+        "count": len(models),
+        "models": models
+    }
+
+
+@router.get("/models/{model_id}")
+def retrieve_model(model_id: str):
+
+    model = get_model_by_id(model_id)
+
+    if model is None:
+        raise HTTPException(
+            status_code=404,
+            detail="AI model not found"
+        )
+
+    return model
+
+
+# --------------------------------
+# CREATE AI REQUEST
+# --------------------------------
+
+@router.post(
+    "/requests",
+    response_model=AIResponse
+)
+def create_ai_request(
+    request: AIRequest,
+    db: Session = Depends(get_db)
+):
+
+    response = process_ai_request(request)
+
+    if response is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Requested AI model does not exist"
+        )
+
+    if isinstance(response, str):
+        if response == "provider_mismatch":
+            raise HTTPException(
+                status_code=400,
+                detail="Selected provider does not match the model"
+            )
+
+    try:
+
+        save_ai_request(
+            db=db,
+            request_data=response
+        )
+
+        return response
+
+    except SQLAlchemyError:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save AI request"
+        )
+
+
+# --------------------------------
+# PROMPT VALIDATION
+# --------------------------------
+
+@router.post(
+    "/requests/validate",
+    response_model=PromptValidationResponse
+)
+def validate_prompt(request: PromptValidationRequest):
+
+    cleaned_prompt = request.prompt.strip()
+
+    return PromptValidationResponse(
+        valid=True,
+        prompt_length=len(cleaned_prompt),
+        message="Prompt validation successful"
+    )
+
+
+# --------------------------------
+# PAGINATED REQUEST HISTORY
+# --------------------------------
+
+@router.get(
+    "/requests/history",
+    response_model=list[AIRequestHistoryResponse]
+)
+def request_history(
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db)
+):
+
+    return get_all_requests(
+        db=db,
+        limit=limit,
+        offset=offset
+    )
+
+
+# --------------------------------
+# FILTER BY MODEL
+# --------------------------------
+
+@router.get(
+    "/requests/model/{model_name}",
+    response_model=list[AIRequestHistoryResponse]
+)
+def filter_by_model(
+    model_name: str,
+    db: Session = Depends(get_db)
+):
+
+    return get_requests_by_model(
+        db=db,
+        model_name=model_name
+    )
+
+
+# --------------------------------
+# FILTER BY STATUS
+# --------------------------------
+
+@router.get(
+    "/requests/status/{status}",
+    response_model=list[AIRequestHistoryResponse]
+)
+def filter_by_status(
+    status: str,
+    db: Session = Depends(get_db)
+):
+
+    allowed_statuses = [
+        "pending",
+        "processing",
+        "success",
+        "failed",
+        "cancelled"
+    ]
+
+    if status not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request status"
+        )
+
+    return get_requests_by_status(
+        db=db,
+        status=status
+    )
+
+
+# --------------------------------
+# UPDATE REQUEST STATUS
+# --------------------------------
+
+@router.put(
+    "/requests/{request_id}",
+    response_model=AIRequestHistoryResponse
+)
+def update_request(
+    request_id: str,
+    request_data: AIRequestUpdate,
+    db: Session = Depends(get_db)
+):
+
+    record = update_request_status(
+        db=db,
+        request_id=request_id,
+        new_status=request_data.status
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Request record not found"
+        )
+
+    return record
+
+
+# --------------------------------
+# DELETE REQUEST
+# --------------------------------
+
+@router.delete("/requests/{request_id}")
+def remove_request(
+    request_id: str,
+    db: Session = Depends(get_db)
+):
+
+    record = delete_request(
+        db=db,
+        request_id=request_id
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Request record not found"
+        )
+
+    return {
+        "message": "Request deleted successfully",
+        "request_id": request_id
+    }
+
+
+# --------------------------------
+# CREATE USER
+# --------------------------------
+
+@router.post(
+    "/users",
+    response_model=UserResponse,
+    status_code=201
+)
+def register_user(
+    user_data: UserCreate,
+    db: Session = Depends(get_db)
+):
+
+    try:
+
+        return create_user(
+            db=db,
+            user_data=user_data
+        )
+
+    except IntegrityError:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail="Email address already registered"
+        )
+
+    except SQLAlchemyError:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create user"
+        )
+
+
+# --------------------------------
+# GET USER
+# --------------------------------
+
+@router.get(
+    "/users/{user_id}",
+    response_model=UserResponse
+)
+def retrieve_user(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+
+    user = get_user_by_id(
+        db=db,
+        user_id=user_id
+    )
+
+    if user is None:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+
+    return user
+
+
+# --------------------------------
+# USAGE ANALYTICS
+# --------------------------------
+
+@router.get(
+    "/usage",
+    response_model=UsageAnalyticsResponse
+)
+def usage_analytics(db: Session = Depends(get_db)):
+
+    return get_usage_analytics(db)
+
+
+# --------------------------------
+# MODEL USAGE ANALYTICS
+# --------------------------------
+
+@router.get("/usage/models")
+def model_usage_analytics(db: Session = Depends(get_db)):
+
+    results = get_model_usage(db)
+
+    return {
+        "models": [
+            {
+                "model": row.model,
+                "total_requests": row.total_requests,
+                "total_tokens": row.total_tokens or 0
+            }
+            for row in results
+        ]
+    }
+
+Important: The endpoint ordering is intentional. Static routes such as /requests/history and /requests/model/{model_name} are defined before /requests/{request_id} to prevent route matching conflicts.
+Also, the POST /requests endpoint still saves requests without associating them with a user. We have introduced the user relationship today, but user authentication and assigning requests to authenticated users will be implemented in a later lesson.
+12. Update your main.py
+Open:
+main.py
+Replace it with:
+ </>Python 
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from api.endpoints import router
+
+from config.database import Base, engine
+
+# Import all database models before creating tables
+from models.request_model import AIRequestRecord
+from models.user_model import User
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    Base.metadata.create_all(bind=engine)
+
+    yield
+
+
+app = FastAPI(
+    title="AI Platform Gateway",
+    description="AI model management, request processing and analytics platform",
+    version="1.3.0",
+    lifespan=lifespan
+)
+
+
+@app.get("/")
+def home():
+
+    return {
+        "message": "Welcome to AI Platform Gateway",
+        "status": "running"
+    }
+
+
+@app.get("/health")
+def health_check():
+
+    return {
+        "status": "healthy",
+        "service": "AI Platform Gateway",
+        "database": "configured"
+    }
+
+
+app.include_router(router)
+
+We import both models so SQLAlchemy knows about both tables and their relationship.
+13. Run the application
+In your VS Code terminal:
+fastapi dev main.py
+Open:
+Open AI Platform Gateway — Swagger UI
+You should now see these API endpoints.
+14. Test all today's new endpoints
+Test A — Register a user
+CREATE
+Endpoint:
+</>HTTP
+POST /users
+
+Request:
+</>JSON
+{
+    "name": "Gaurav",
+    "email": "gaurav@example.com"
+}
+
+Expected response:
+</>JSON
+{
+    "id": 1,
+    "name": "Gaurav",
+    "email": "gaurav@example.com"
+}
+
+
+The database should now contain one user.
+Test B — Submit an AI request
+Endpoint:
+</>HTTP    
+POST /requests
+
+Request:
+</>JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI Platform Engineering",
+    "max_tokens": 500,
+    "temperature": 0.7,
+    "provider": "OpenAI",
+    "stream": false
+}
+
+The request will be saved in PostgreSQL.
+Copy the returned request_id.
+Test C — Retrieve all requests
+READ
+Endpoint:
+</>HTTP
+GET /requests/history
+
+Try these query parameters:
+</>Plain text
+limit = 10
+offset = 0
+
+Now try:
+</>Plain text
+limit = 2
+offset = 0
+
+Then:
+</>Plain text
+limit = 2
+offset = 2
+
+This demonstrates pagination.
+How pagination works:
+•	limit controls how many records are returned.
+•	offset controls how many records are skipped.
+For example, if you have 100 records:
+Request	Result
+limit=10&offset=0	Records 1–10
+limit=10&offset=10	Records 11–20
+limit=10&offset=20	Records 21–30
+Test D — Filter by model
+Endpoint:
+</>HTTP    
+GET /requests/model/gpt-4o
+
+Expected: All saved requests using gpt-4o.
+Test E — Filter by status
+Endpoint:
+</>HTTP    
+GET /requests/status/success
+
+Expected: All requests whose status is success.
+Test F — Update request status
+UPDATE
+Endpoint:
+</>HTTP    
+PUT /requests/{request_id}
+
+Enter the request ID from Test B.
+Request body:
+</>JSON
+{
+    "status": "failed"
+}
+
+Expected response: The saved request with its updated status.
+Try retrieving the same record again to verify that the database was updated.
+Test G — Delete a request
+DELETE
+Endpoint:
+</>HTTP    
+DELETE /requests/{request_id}
+
+Enter the same request ID.
+Expected:
+</>JSON
+{
+    "message": "Request deleted successfully",
+    "request_id": "req_a1b2c3d4"
+}
+
+Try retrieving that request again. It should return 404 Not Found.
+Test H — Retrieve usage analytics
+Endpoint:
+</>HTTP    
+GET /usage
+
+Expected response structure:
+</>JSON
+{
+    "total_requests": 10,
+    "total_input_tokens": 1200,
+    "total_output_tokens": 3500,
+    "total_tokens": 4700
+}
+
+The figures above are illustrative. Your actual values depend on your database records.
+Test I — Retrieve model-wise analytics
+Endpoint:
+</>HTTP    
+GET /usage/models
+
+Example:
+</>JSON
+{
+    "models": [
+        {
+            "model": "gpt-4o",
+            "total_requests": 5,
+            "total_tokens": 1200
+        },
+        {
+            "model": "claude-3-5-sonnet",
+            "total_requests": 3,
+            "total_tokens": 900
+        }
+    ]
+}
+
+This endpoint helps a platform administrator understand which models are being used and how much token consumption each model generates.
+15. Verify your database relationships
+Open pgAdmin Query Tool and execute:
+</>SQL
+SELECT
+    u.id AS user_id,
+    u.name,
+    u.email,
+    r.request_id,
+    r.model,
+    r.total_tokens
+FROM users u
+LEFT JOIN ai_requests r
+ON u.id = r.user_id;
+
+At present, requests created through your API have user_id = NULL, because we haven't connected user authentication to request submission yet.
+That is expected.
+Now execute:
+</>SQL	
+SELECT
+    model,
+    COUNT(*) AS total_requests,
+    SUM(total_tokens) AS total_tokens
+FROM ai_requests
+GROUP BY model;
+
+This retrieves model-wise usage directly from PostgreSQL.
+16. Important improvements to remember
+Today's implementation is suitable for learning CRUD and ORM concepts. Before production deployment, consider:
+1.	Authentication: Users should only access their own requests.
+2.	Authorization: Only permitted users should update or delete records.
+3.	Soft deletion: Consider marking records as deleted rather than permanently removing them.
+4.	Pagination: Use pagination for large request histories.
+5.	Database migrations: Use Alembic to manage changes to database schemas.
+6.	Transactions: Handle rollback and database failures consistently.
+7.	Usage accuracy: Actual provider-reported token usage should replace our simulated estimates.
+These are important subjects for AI Platform Engineering interviews.
+17. Day 13 interview preparation
+Try answering these questions aloud.
+Q1. What does CRUD stand for?
+Create, Read, Update and Delete. These are the four fundamental database operations.
+Q2. What is a foreign key?
+A foreign key is a column that references a key in another table, establishing a relationship between records.
+Q3. What is a one-to-many relationship?
+One record in a parent table can be associated with multiple records in a child table. For example, one user can submit multiple AI requests.
+Q4. What is SQLAlchemy relationship()?
+It defines an ORM-level relationship between database models, allowing developers to navigate related objects using Python.
+Q5. What is pagination?
+Pagination divides a large result set into smaller pages using parameters such as limit and offset.
+Q6. What is GROUP BY used for?
+It groups records with common values so aggregate functions can calculate statistics for each group.
+Q7. What is the difference between COUNT() and SUM()?
+•	COUNT() counts records.
+•	SUM() calculates the total of numeric values.
+Q8. Why is connection pooling important?
+It allows database connections to be reused, reducing the overhead of repeatedly opening and closing connections.
+Q9. What is the difference between a primary key and a foreign key?
+A primary key uniquely identifies a record in its own table. A foreign key references a key in another table.
+Q10. Why should you use Alembic?
+Alembic manages database schema migrations, allowing you to apply and track structural changes without manually recreating database tables.
+18. Day 13 practical assignments
+Complete these independently.
+Exercise 1 — User request history
+Create:
+</>HTTP    
+GET /users/{user_id}/requests
+Return all AI requests associated with that user.
+Hint: Filter using:
+</>Python
+AIRequestRecord.user_id == user_id
+
+Exercise 2 — Add request count by status
+Create:
+</>HTTP    
+GET /usage/status
+Expected response:
+</>JSON
+{
+    "success": 8,
+    "failed": 2,
+    "pending": 1
+}
+
+Hint: Use SQLAlchemy group_by().
+Exercise 3 — Add a provider-wise report
+Create:
+</>HTTP    
+GET /usage/providers
+Calculate:
+•	Provider name.
+•	Total requests.
+•	Total tokens.
+
+Exercise 4 — Test the complete CRUD cycle
+Register a user, submit requests, retrieve them, update one request, delete another and verify the final database records.
+19. Day 13 completion tracker
+Day 13 progress
+0/13
+Create the users database model
+Add the user_id foreign key to AI requests
+Update database schema safely
+Create UserCreate and UserResponse schemas
+Implement request CRUD operations
+Implement user registration and retrieval
+Implement filtering by model and status
+Implement pagination using limit and offset
+Build /usage analytics endpoint
+Build /usage/models endpoint
+Test update and delete operations
+Verify SQL queries in pgAdmin
+Complete at least two coding exercises
+20. What comes next — Day 14
+Week 2 final lesson
+Day 14 — Backend Integration, Authentication & Weekly Assessment
+We'll consolidate the backend skills covered in Days 8–13:
+•	FastAPI project architecture.
+•	PostgreSQL and SQLAlchemy revision.
+•	JWT authentication fundamentals.
+•	API testing and error handling.
+•	Environment variables and configuration.
+•	Backend project assessment.
+•	Week 2 interview mock test.
+Your Week 2 milestone: Build a backend that can receive AI requests, validate them, save them in PostgreSQL, retrieve and update records, and calculate usage analytics.
+The next major stage, beginning Day 15, is integrating actual LLM APIs into your platform.
