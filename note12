@@ -1,0 +1,871 @@
+PostgreSQL, SQLAlchemy ORM & Database Integration
+Week 2 · Day 12 of 45
+Hands-on development
+Until Day 11, your AI Platform Gateway processed requests but did not permanently save them. If you restarted the application, the request history disappeared.
+Today, we'll connect your FastAPI application to PostgreSQL and save every AI request in a database.
+By the end of Day 12, you'll be able to:
+1.	Understand relational databases and SQL.
+2.	Connect PostgreSQL to FastAPI.
+3.	Use SQLAlchemy ORM to create database tables through Python.
+4.	Save AI requests into PostgreSQL.
+5.	Retrieve request history through API endpoints.
+2. Understand why your AI platform needs a database
+Imagine 100 users submit AI requests every day.
+Your platform needs to store:
+•	Request ID
+•	User prompt
+•	AI model
+•	Provider
+•	Input tokens
+•	Output tokens
+•	Total tokens
+•	Request status
+•	Request creation time
+Without a database, these records disappear when the application restarts.
+With PostgreSQL, the records remain available.
+Your new architecture
+Client / Frontend
+Submits an AI request
+FastAPI
+Receives and validates request
+SQLAlchemy ORM
+Converts Python operations into SQL
+PostgreSQL database
+Permanently stores request records
+ 
+3. Learn SQL fundamentals
+SQL stands for Structured Query Language.
+It is used to communicate with relational databases such as PostgreSQL and MySQL.
+Let's understand five important SQL operations.
+A. CREATE TABLE
+Creates a database table.
+</>SQL
+CREATE TABLE ai_requests (
+    id SERIAL PRIMARY KEY,
+    request_id VARCHAR(100),
+    model VARCHAR(100),
+    prompt TEXT,
+    status VARCHAR(50)
+);
+
+B. INSERT
+Adds a record.
+INSERT INTO ai_requests
+(request_id, model, prompt, status)
+VALUES
+('req_001', 'gpt-4o', 'Explain AI', 'success');
+C. SELECT
+Retrieves records.
+</>SQL
+SELECT * FROM ai_requests;
+D. UPDATE
+Updates existing records.
+</>SQL
+UPDATE ai_requests
+SET status = 'completed'
+WHERE request_id = 'req_001';
+E. DELETE
+Deletes records.
+</>SQL
+DELETE FROM ai_requests
+WHERE request_id = 'req_001';
+For today's project, we'll use SQLAlchemy ORM instead of writing these SQL statements manually.
+4. Install PostgreSQL on Windows
+If PostgreSQL is already installed, skip to Section 5.
+ 
+Download PostgreSQL from:
+PostgreSQL official Windows download
+During installation:
+1.	Select PostgreSQL Server.
+2.	Install pgAdmin 4.
+3.	Keep the default port as 5432.
+4.	Set a password for the postgres user.
+5.	Remember that password; you'll need it for the connection.
+Open pgAdmin 4 and connect to your local PostgreSQL server.
+Create your database
+In pgAdmin:
+1.	Expand Servers.
+2.	Expand your PostgreSQL server.
+3.	Right-click Databases.
+4.	Select Create → Database.
+5.	Enter:
+</>Plain text
+Database name: ai_platform_db
+6. Save.
+Database created
+Your database name is now ai_platform_db.
+5. Install the Python database libraries
+Open your existing project in VS Code:
+</>Plain text
+D:\Gaurev\Projects\AIPlatformGateway
+Activate your virtual environment: 
+python -m pip install sqlalchemy "psycopg[binary]" python-dotenv
+What each package does:
+Package	Purpose
+sqlalchemy	ORM for communicating with databases
+psycopg	PostgreSQL database driver
+python-dotenv	Loads environment variables from .env
+Update requirements.txt:
+</>Plain text
+fastapi[standard]
+pydantic
+sqlalchemy
+psycopg[binary]
+python-dotenv
+You can also install everything listed in the file using:
+python -m pip install -r requirements.txt
+6. Understand SQLAlchemy ORM
+ORM stands for Object Relational Mapper.
+It allows you to work with database tables using Python classes instead of writing SQL manually for every operation.
+For example, instead of manually executing:
+</>SQL
+INSERT INTO ai_requests (model, prompt)
+VALUES ('gpt-4o', 'Explain AI');
+You can write Python:
+
+new_request = AIRequestRecord(
+    model="gpt-4o",
+    prompt="Explain AI"
+)
+
+</>python
+new_request = AIRequestRecord(
+    model="gpt-4o",
+    prompt="Explain AI"
+)
+db.add(new_request)
+db.commit()
+
+SQLAlchemy translates these Python operations into SQL.
+Important distinction:
+•	PostgreSQL is the database that stores your data.
+•	SQLAlchemy is the Python ORM that communicates with it.
+•	Psycopg is the driver that connects Python to PostgreSQL.
+7. Update your project structure
+Create the following new folders and files:
+AIPlatformGateway/
+│
+├── main.py
+├── .env
+├── .gitignore
+├── requirements.txt
+│
+├── api/
+│   ├── __init__.py
+│   └── endpoints.py
+│
+├── config/
+│   ├── __init__.py
+│   ├── models_config.py
+│   └── database.py
+│
+├── models/
+│   ├── __init__.py
+│   └── request_model.py
+│
+├── schemas/
+│   ├── __init__.py
+│   └── request_schema.py
+│
+└── services/
+    ├── __init__.py
+    ├── model_service.py
+    └── request_service.py
+
+We'll use the new models folder for database table definitions. This is separate from the AI model registry in config/models_config.py.
+8. Configure your database connection
+File: .env
+Create this file in the project root:
+</>env
+DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/ai_platform_db
+Use your own password, not this example.
+If your password contains special URL characters such as @, / or #, URL-encode it before putting it in the connection string.
+File: .gitignore
+Create this file in the project root:
+</>Plain text
+.venv/
+__pycache__/
+.env
+*.pyc
+.pytest_cache/
+
+This prevents your database credentials and local environment files from being committed to GitHub.
+File: config/database.py
+</>Python
+import os
+
+from dotenv import load_dotenv
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. Check your .env file."
+    )
+
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True
+)
+
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
+
+Base = declarative_base()
+
+
+def get_db():
+
+    db = SessionLocal()
+
+    try:
+        yield db
+
+    finally:
+        db.close()
+
+Understand this code
+•	load_dotenv() reads your .env file.
+•	create_engine() creates the database engine.
+•	SessionLocal creates database sessions.
+•	Base is the parent class for database models.
+•	get_db() provides a database session to an API endpoint and closes it afterwards.
+A session is the unit of work through which your application reads and writes database records.
+9. Create your first database table using Python
+File: models/__init__.py
+Leave this file empty.
+File: models/request_model.py
+</>Python
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime
+)
+
+from config.database import Base
+
+
+class AIRequestRecord(Base):
+
+    __tablename__ = "ai_requests"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    request_id = Column(
+        String(100),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    model = Column(
+        String(100),
+        nullable=False
+    )
+
+    provider = Column(
+        String(100),
+        nullable=True
+    )
+
+    prompt = Column(
+        Text,
+        nullable=False
+    )
+
+    status = Column(
+        String(50),
+        nullable=False
+    )
+
+    input_tokens = Column(
+        Integer,
+        default=0
+    )
+
+    output_tokens = Column(
+        Integer,
+        default=0
+    )
+
+    total_tokens = Column(
+        Integer,
+        default=0
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+Understand the table
+Your AIRequestRecord Python class represents the PostgreSQL table ai_requests.
+Database column	Python type	Purpose
+id	Integer	Primary key
+request_id	String	Unique API request identifier
+model	String	AI model used
+provider	String	Model provider
+prompt	Text	User prompt
+status	String	Request status
+input_tokens	Integer	Input token estimate
+output_tokens	Integer	Output token estimate
+total_tokens	Integer	Total token estimate
+created_at	DateTime	Request creation timestamp
+Notice that we did not write a CREATE TABLE SQL command. SQLAlchemy will create the table from this Python class.
+10. Create the database service
+Now we'll create functions to save and retrieve records.
+File: services/request_service.py
+</>Python
+from sqlalchemy.orm import Session
+
+from models.request_model import AIRequestRecord
+
+
+def save_ai_request(db: Session, request_data):
+
+    new_record = AIRequestRecord(
+        request_id=request_data.request_id,
+        model=request_data.model,
+        provider=request_data.provider,
+        prompt=request_data.prompt,
+        status=request_data.status,
+        input_tokens=request_data.input_tokens,
+        output_tokens=request_data.output_tokens,
+        total_tokens=request_data.total_tokens
+    )
+
+    db.add(new_record)
+
+    db.commit()
+
+    db.refresh(new_record)
+
+    return new_record
+
+
+def get_all_requests(db: Session, limit: int = 50):
+
+    return (
+        db.query(AIRequestRecord)
+        .order_by(AIRequestRecord.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def get_request_by_id(db: Session, request_id: str):
+
+    return (
+        db.query(AIRequestRecord)
+        .filter(
+            AIRequestRecord.request_id == request_id
+        )
+        .first()
+    )
+
+Understand the database operations
+SQLAlchemy command	Purpose
+db.add()	Adds a new record to the session
+db.commit()	Saves the transaction
+db.refresh()	Reloads the saved database record
+db.query()	Starts a database query
+.filter()	Filters records
+.all()	Returns all matching records
+.first()	Returns the first matching record
+One important concept: commit() makes the database transaction permanent. If a transaction fails, you should roll it back before reusing the session. We'll handle that in the API endpoint.
+11. Add database response schemas
+Open:
+schemas/request_schema.py
+Keep all the Day 11 classes and imports. Add these imports and classes to the file:
+</>Python
+from datetime import datetime
+from pydantic import ConfigDict
+Add this class at the bottom:
+</>Python
+class AIRequestHistoryResponse(BaseModel):
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+
+    request_id: str
+
+    model: str
+
+    provider: str | None = None
+
+    prompt: str
+
+    status: str
+
+    input_tokens: int
+
+    output_tokens: int
+
+    total_tokens: int
+
+    created_at: datetime
+
+from_attributes=True allows Pydantic to create a response from a SQLAlchemy object by reading its attributes.
+This is useful because database records are Python objects, not ordinary dictionaries.
+12. Connect the database to your API
+Open:
+api/endpoints.py
+Replace the file with this complete updated version:
+</>Python
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Depends,
+    Query
+)
+
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+
+from config.database import get_db
+
+from services.model_service import (
+    get_all_models,
+    get_model_by_id,
+    process_ai_request
+)
+
+from services.request_service import (
+    save_ai_request,
+    get_all_requests,
+    get_request_by_id
+)
+
+from schemas.request_schema import (
+    AIRequest,
+    AIResponse,
+    PromptValidationRequest,
+    PromptValidationResponse,
+    AIRequestHistoryResponse
+)
+
+
+router = APIRouter()
+
+
+@router.get("/models")
+def list_models():
+
+    models = get_all_models()
+
+    return {
+        "count": len(models),
+        "models": models
+    }
+
+
+@router.get("/models/{model_id}")
+def retrieve_model(model_id: str):
+
+    model = get_model_by_id(model_id)
+
+    if model is None:
+        raise HTTPException(
+            status_code=404,
+            detail="AI model not found"
+        )
+
+    return model
+
+
+@router.post(
+    "/requests",
+    response_model=AIResponse
+)
+def create_ai_request(
+    request: AIRequest,
+    db: Session = Depends(get_db)
+):
+
+    response = process_ai_request(request)
+
+    if response is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Requested AI model does not exist"
+        )
+
+    if isinstance(response, str):
+        if response == "provider_mismatch":
+            raise HTTPException(
+                status_code=400,
+                detail="Selected provider does not match the model"
+            )
+
+    try:
+
+        save_ai_request(
+            db=db,
+            request_data=response
+        )
+
+        return response
+
+    except SQLAlchemyError:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save AI request to database"
+        )
+
+
+@router.post(
+    "/requests/validate",
+    response_model=PromptValidationResponse
+)
+def validate_prompt(request: PromptValidationRequest):
+
+    cleaned_prompt = request.prompt.strip()
+
+    return PromptValidationResponse(
+        valid=True,
+        prompt_length=len(cleaned_prompt),
+        message="Prompt validation successful"
+    )
+
+
+@router.get(
+    "/requests/history",
+    response_model=list[AIRequestHistoryResponse]
+)
+def request_history(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+
+    return get_all_requests(
+        db=db,
+        limit=limit
+    )
+
+
+@router.get(
+    "/requests/{request_id}",
+    response_model=AIRequestHistoryResponse
+)
+def retrieve_request(
+    request_id: str,
+    db: Session = Depends(get_db)
+):
+
+    record = get_request_by_id(
+        db=db,
+        request_id=request_id
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Request record not found"
+        )
+
+    return record
+
+Important: Keep /requests/history above /requests/{request_id}. Otherwise, the dynamic route could interpret history as a request ID.
+We now have two new database endpoints:
+Endpoint	Method	Purpose
+/requests/history	GET	Retrieve saved requests
+/requests/{request_id}	GET	Retrieve one saved request
+13. Update main.py to create the table
+Replace your main.py with:
+</>Python
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from api.endpoints import router
+
+from config.database import Base, engine
+
+# Import the ORM model so SQLAlchemy knows about the table
+from models.request_model import AIRequestRecord
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    # Create database tables if they do not exist
+    Base.metadata.create_all(bind=engine)
+
+    yield
+
+
+app = FastAPI(
+    title="AI Platform Gateway",
+    description="AI model management and request processing platform",
+    version="1.2.0",
+    lifespan=lifespan
+)
+
+
+@app.get("/")
+def home():
+
+    return {
+        "message": "Welcome to AI Platform Gateway",
+        "status": "running"
+    }
+
+
+@app.get("/health")
+def health_check():
+
+    return {
+        "status": "healthy",
+        "service": "AI Platform Gateway",
+        "database": "configured"
+    }
+
+
+app.include_router(router)
+
+The lifespan function runs when your FastAPI application starts.
+Base.metadata.create_all() checks the registered SQLAlchemy models and creates missing tables.
+It does not automatically update existing table structures when you change your models. For future schema changes, we'll learn database migrations with Alembic.
+14. Run your application and verify the connection
+Before starting FastAPI, check:
+•	PostgreSQL server is running.
+•	Database ai_platform_db exists.
+•	.env contains the correct password.
+•	Your virtual environment is activated.
+Run:
+fastapi dev main.py
+
+If the connection works, FastAPI should start without a database connection error.
+When the application starts, SQLAlchemy creates the ai_requests table if it doesn't already exist.
+Verify in pgAdmin
+Open pgAdmin and navigate to:
+
+</>Plain text
+Servers
+  └── PostgreSQL
+       └── Databases
+            └── ai_platform_db
+                 └── Schemas
+                      └── public
+                           └── Tables
+Right-click Tables and select Refresh.
+You should see:
+Expected table
+</>Plain text
+ai_requestsYou can also open Query Tool and execute:
+</>SQL
+SELECT * FROM ai_requests;
+Initially, it should return zero records.
+15. Test your database integration using Swagger
+Open:
+Open your AI Platform Gateway Swagger UI
+We'll test the complete workflow.
+Test A — Submit an AI request
+Use:
+POST /requests
+Request body:
+</>JSON
+{
+    "model": "gpt-4o",
+    "prompt": "Explain AI Platform Engineering",
+    "max_tokens": 500,
+    "temperature": 0.7,
+    "provider": "OpenAI",
+    "stream": false
+}
+
+Expected response structure:
+</>JSON
+{
+    "request_id": "req_a1b2c3d4",
+    "model": "gpt-4o",
+    "status": "success",
+    "input_tokens": 4,
+    "output_tokens": 6,
+    "total_tokens": 10,
+    "message": "Request validated and simulated successfully",
+    "provider": "OpenAI"
+}
+
+
+Database save test
+The API should now:
+1.	Validate your request.
+2.	Process the request in the service.
+3.	Generate a request ID.
+4.	Save the request to PostgreSQL.
+5.	Return the response.
+Test B — Retrieve request history
+Call:
+</>HTTP
+GET /requests/history
+Expected response:
+</>JSON
+[
+    {
+        "id": 1,
+        "request_id": "req_a1b2c3d4",
+        "model": "gpt-4o",
+        "provider": "OpenAI",
+        "prompt": "Explain AI Platform Engineering",
+        "status": "success",
+        "input_tokens": 4,
+        "output_tokens": 6,
+        "total_tokens": 10,
+        "created_at": "2026-11-25T10:00:00Z"
+    }
+]
+
+The timestamp above is illustrative; your actual response will contain the database-generated timestamp.
+Test C — Retrieve a specific request
+Copy the request_id from Test A.
+Call:
+</>HTTP
+GET /requests/req_a1b2c3d4
+
+Expected result: details of that specific saved request.
+Test D — Check database records directly
+In pgAdmin Query Tool, execute:
+</>SQL
+SELECT
+    id,
+    request_id,
+    model,
+    provider,
+    status,
+    total_tokens,
+    created_at
+FROM ai_requests
+ORDER BY id DESC;
+
+You should now see the request you submitted through Swagger.
+Test E — Verify persistence
+1.	Submit two more AI requests.
+2.	Stop the FastAPI server using Ctrl + C.
+3.	Restart it using fastapi dev main.py.
+4.	Call GET /requests/history again.
+Your previous requests should still exist.
+This is the key achievement of today's lesson: persistent data storage.
+16. Common errors and solutions
+Error	Possible reason	What to check
+Connection refused	PostgreSQL isn't running	Start PostgreSQL service
+Password authentication failed	Incorrect password	Check .env
+Database does not exist	Wrong database name	Verify ai_platform_db
+No module named sqlalchemy	Package missing	Install SQLAlchemy
+No module named psycopg	Driver missing	Install psycopg[binary]
+Table does not exist	ORM model not registered	Check model import in main.py
+DATABASE_URL is missing	.env not loaded or misnamed	Check project root and filename
+One useful troubleshooting command:
+python -m pip show sqlalchemy psycopg python-dotenv
+This confirms whether the three packages are installed in your active Python environment.
+17. Day 12 interview preparation
+Q1. What is PostgreSQL?
+PostgreSQL is an open-source relational database management system used to store and retrieve structured data.
+Q2. What is SQLAlchemy?
+SQLAlchemy is a Python SQL toolkit and ORM that allows developers to interact with databases using Python objects and queries.
+Q3. What is ORM?
+Object Relational Mapping connects programming-language objects with relational database tables.
+Q4. What is the difference between commit() and rollback()?
+•	commit() permanently saves the current transaction.
+•	rollback() cancels uncommitted changes in the current transaction.
+Q5. What is a primary key?
+A primary key uniquely identifies each record in a database table.
+Q6. What is a foreign key?
+A foreign key establishes a relationship between tables by referencing a key in another table.
+Q7. What is a database session?
+A session represents a unit of work for interacting with the database. It manages queries, changes and transactions.
+Q8. What is connection pooling?
+Connection pooling reuses database connections instead of creating a new connection for every request, improving efficiency.
+Q9. What is the difference between SQLAlchemy ORM and PostgreSQL?
+PostgreSQL stores the data. SQLAlchemy ORM allows Python applications to interact with that database.
+Q10. Why should database credentials be stored in environment variables?
+To keep sensitive configuration out of source code and prevent credentials from being accidentally committed to GitHub.
+18. Day 12 practical assignments
+Complete these independently.
+Exercise 1 — Add a model filter
+Create:
+</>HTTP
+GET /requests/model/{model_name}
+
+It should retrieve all database records for a selected model.
+Hint: Use:
+</>Python
+db.query(AIRequestRecord).filter(
+    AIRequestRecord.model == model_name
+).all()
+
+Exercise 2 — Add a status filter
+Create:
+</>HTTP
+GET /requests/status/{status}
+
+It should return records with a particular status.
+Exercise 3 — Add token usage statistics
+Create:
+</>HTTP
+GET /usage
+
+Return:
+</>JSON
+{
+    "total_requests": 10,
+    "total_input_tokens": 1200,
+    "total_output_tokens": 3500,
+    "total_tokens": 4700
+}
+
+Hint: Use SQLAlchemy aggregate functions such as func.count() and func.sum().
+Exercise 4 — Test persistence
+Submit at least three requests, restart FastAPI, and verify that all three records remain available.
+19. Day 12 completion tracker
+Day 12 progress
+0/13
+Install PostgreSQL and create ai_platform_db
+Install SQLAlchemy, Psycopg and python-dotenv
+Configure .env and .gitignore
+Create config/database.py
+Create AIRequestRecord ORM model
+Create request_service.py
+Connect database sessions to FastAPI endpoints
+Create the ai_requests table
+Successfully save a request through POST /requests
+Retrieve request history through GET /requests/history
+Verify records directly in pgAdmin
+Restart FastAPI and verify persistence
+Complete at least two coding exercises
+20. What comes next — Day 13
+Next lesson
+Day 13 — SQLAlchemy CRUD, Database Relationships & Usage Analytics
+We'll build on today's database integration:
+•	Create, Read, Update and Delete operations.
+•	SQLAlchemy filtering and sorting.
+•	Pagination for large request histories.
+•	Database relationships and foreign keys.
+•	AI usage statistics using SQL aggregation.
+•	A proper usage analytics endpoint.
+Your Day 12 milestone: Your AI Platform Gateway should now save requests permanently in PostgreSQL and retrieve them through FastAPI. The AI processing itself is still simulated; we'll integrate an actual LLM provider in the upcoming AI integration module.
