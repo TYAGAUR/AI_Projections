@@ -1,0 +1,767 @@
+Prompt Engineering & Model Parameters, covering:
+1.	System, developer and user instructions.
+2.	Reusable prompt templates.
+3.	Temperature and generation parameters.
+4.	Model selection and routing.
+5.	Structured JSON output.
+6.	Prompt versioning.
+7.	Building a reusable prompt service.
+
+Prompt Engineering & LLM Model Parameters
+Week 3 – Day 2
+3 hours
+AI Platform Engineer
+Yesterday, you connected your AI Platform Gateway to the real OpenAI API.
+Today, we'll make that integration configurable, reusable and more reliable.
+Instead of sending every prompt directly to the LLM, we'll build a Prompt Engineering Layer that controls instructions, generation settings, model selection and structured responses.
+By the end of Day 16, your platform will support:
+1.	System instructions and user prompts.
+2.	Reusable prompt templates.
+3.	Configurable model parameters.
+4.	Model selection and routing.
+5.	Structured JSON responses.
+6.	Prompt versioning.
+
+2. Understand prompt engineering
+Prompt engineering is the process of designing and structuring instructions to get useful, consistent outputs from an LLM.
+Consider this example.
+Basic prompt
+</>Plain text
+Explain AI.
+This is vague. The model can respond in many different ways.
+Improved prompt
+</>Plain text
+You are an AI engineering instructor.
+
+Explain Artificial Intelligence to a beginner.
+
+Requirements:
+1. Use simple language.
+2. Explain with a practical example.
+3. Keep the answer under 150 words.
+4. Avoid unnecessary technical jargon.
+
+Return the answer with a heading and bullet points.
+The second prompt gives the model a clear role, task, constraints and expected output.
+Four important prompt components
+Component	Purpose
+Role	Defines the assistant's expertise
+Context	Provides background information
+Task	Explains what the model should do
+Output format	Defines how the response should look
+3. Understand system, developer and user instructions
+These are different instruction sources used when constructing a model conversation.
+•	System instructions: High-level behavior and platform-wide rules.
+•	Developer instructions: Application-specific behavior and requirements.
+•	User instructions: The actual request submitted by the user.
+For example:
+</>Plain text
+System:
+You are a helpful AI assistant.
+
+Developer:
+Answer as an enterprise software architect.
+Use practical examples.
+
+User:
+Explain microservices architecture.
+For the OpenAI Responses API, we'll use the instructions parameter for the application-level instructions and input for the user's prompt. The platform's internal instructions should not be exposed to the end user.
+4. Update your project structure
+Keep your existing files and add these:
+</>Plain text
+AIPlatformGateway/
+│
+├── main.py
+├── .env
+├── requirements.txt
+│
+├── api/
+│   ├── __init__.py
+│   ├── endpoints.py
+│   └── auth.py
+│
+├── config/
+│   ├── __init__.py
+│   ├── database.py
+│   ├── security.py
+│   └── llm_config.py
+│
+├── schemas/
+│   ├── __init__.py
+│   ├── request_schema.py
+│   └── prompt_schema.py              NEW
+│
+├── services/
+│   ├── __init__.py
+│   ├── llm_service.py
+│   ├── prompt_service.py             NEW
+│   ├── model_router.py               NEW
+│   ├── request_service.py
+│   └── analytics_service.py
+│
+└── prompts/                           NEW
+    ├── __init__.py
+    └── templates.py                  NEW
+
+5. Create reusable prompt templates
+Create prompts/templates.py:
+</>Python
+PROMPT_TEMPLATES = {
+
+    "general_assistant": {
+        "version": "1.0",
+        "instructions": """
+        You are a professional AI assistant.
+
+        Provide accurate, clear and useful answers.
+
+        Use simple language where possible.
+        Structure longer answers with headings and bullet points.
+        If you are uncertain, say so.
+        """
+    },
+
+    "technical_assistant": {
+        "version": "1.0",
+        "instructions": """
+        You are a senior software architect.
+
+        Explain technical concepts with practical examples.
+
+        Focus on:
+        - Architecture
+        - Scalability
+        - Security
+        - Performance
+        - Maintainability
+
+        Provide production-oriented recommendations.
+        """
+    },
+
+    "code_assistant": {
+        "version": "1.0",
+        "instructions": """
+        You are an expert Python developer.
+
+        Write clean and maintainable Python code.
+
+        Include:
+        - Complete working code
+        - Explanation
+        - Error handling
+        - Best practices
+
+        Avoid incomplete code snippets.
+        """
+    }
+
+}
+
+Why templates?
+Imagine 1,000 users using your AI platform. You don't want every API endpoint to contain its own hardcoded system instructions.
+Instead, each request selects a reusable template. This makes prompt behavior easier to manage and test.
+6. Build a reusable prompt service
+Create services/prompt_service.py:
+</>Python
+from prompts.templates import PROMPT_TEMPLATES
+
+
+def get_prompt_instructions(template_name: str) -> dict:
+
+    template = PROMPT_TEMPLATES.get(template_name)
+
+    if template is None:
+        raise ValueError(
+            f"Unknown prompt template: {template_name}"
+        )
+
+    return {
+        "template_name": template_name,
+        "version": template["version"],
+        "instructions": template["instructions"]
+    }
+
+This function selects a prompt template by name and returns its instructions and version.
+For example:
+</>Python
+result = get_prompt_instructions("technical_assistant")
+
+print(result["version"])
+print(result["instructions"])
+
+7. Understand model parameters
+Model parameters influence how an LLM generates a response.
+Parameter	Purpose	Typical use
+temperature	Controls randomness where supported	Creative vs consistent output
+max_output_tokens	Limits generated output	Control response length
+model	Selects the LLM	Cost, latency and quality
+verbosity	Controls response detail where supported	Concise vs detailed output
+Temperature examples
+Lower temperature
+0.2
+More consistent responses
+Example: classification, extraction, structured business answers.
+Higher temperature
+0.9
+More varied responses
+Example: brainstorming, creative writing.
+These values are illustrative, not universal settings. Not every model supports every generation parameter.
+Some reasoning models do not accept a temperature setting, so your application must check model compatibility rather than blindly sending it. 
+OpenAI API+1
+8. Build model selection and routing
+Create services/model_router.py:
+</>Python
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+MODEL_REGISTRY = {
+    "fast": {
+        "provider": "OpenAI",
+        "model": os.getenv("OPENAI_FAST_MODEL", "gpt-5.5"),
+        "supports_temperature": True
+    },
+
+    "quality": {
+        "provider": "OpenAI",
+        "model": os.getenv("OPENAI_QUALITY_MODEL", "gpt-5.5"),
+        "supports_temperature": False
+    }
+}
+
+
+def resolve_model(model_alias: str | None = None):
+
+    selected_alias = model_alias or "fast"
+
+    model_config = MODEL_REGISTRY.get(selected_alias)
+
+    if model_config is None:
+        raise ValueError("Unsupported model selection")
+
+    return {
+        "alias": selected_alias,
+        **model_config
+    }
+
+Add these optional entries to .env:
+</>env
+OPENAI_FAST_MODEL=gpt-5.5
+OPENAI_QUALITY_MODEL=gpt-5.5
+
+
+
+For this exercise, both aliases can point to the same model. Later, you can configure different models based on your account's access and the capabilities you need.
+Why model routing matters
+Suppose your application receives two requests:
+•	A simple classification task.
+•	A complex technical architecture question.
+Your model router can choose different models based on task complexity, latency requirements and budget.
+This is the foundation of intelligent model routing in an AI platform.
+9. Update the LLM service
+Open services/llm_service.py and replace the previous generate_ai_response() implementation with:
+</>Python
+from uuid import uuid4
+
+from openai import OpenAIError
+
+from config.llm_config import client
+
+from services.model_router import resolve_model
+
+from services.prompt_service import get_prompt_instructions
+
+
+def generate_ai_response(
+    prompt: str,
+    max_output_tokens: int = 500,
+    template_name: str = "general_assistant",
+    model_alias: str = "fast",
+    temperature: float | None = None
+):
+
+    try:
+
+        # Step 1: Load prompt template
+        prompt_config = get_prompt_instructions(
+            template_name
+        )
+
+        # Step 2: Select model
+        model_config = resolve_model(model_alias)
+
+        # Step 3: Prepare API parameters
+        api_params = {
+            "model": model_config["model"],
+            "instructions": prompt_config["instructions"],
+            "input": prompt,
+            "max_output_tokens": max_output_tokens
+        }
+
+        # Step 4: Apply temperature only when supported
+        if temperature is not None:
+
+            if not model_config["supports_temperature"]:
+                raise ValueError(
+                    "Temperature is not supported "
+                    "for this model configuration."
+                )
+
+            api_params["temperature"] = temperature
+
+        # Step 5: Execute OpenAI request
+        response = client.responses.create(**api_params)
+
+        generated_text = response.output_text
+
+        if not generated_text:
+            raise RuntimeError(
+                "The model returned no text output."
+            )
+
+        usage = response.usage
+
+        return {
+            "request_id": str(uuid4()),
+            "model": model_config["model"],
+            "model_alias": model_config["alias"],
+            "template_name": prompt_config["template_name"],
+            "prompt_version": prompt_config["version"],
+            "status": "success",
+            "prompt": prompt,
+            "response": generated_text,
+            "input_tokens": usage.input_tokens if usage else 0,
+            "output_tokens": usage.output_tokens if usage else 0,
+            "total_tokens": usage.total_tokens if usage else 0
+        }
+
+    except OpenAIError as error:
+
+        print(f"OpenAI error: {type(error).__name__}")
+
+        raise RuntimeError(
+            "AI provider request failed."
+        ) from error
+
+Notice that the application now controls three things independently:
+•	Which prompt instructions are used.
+•	Which model configuration is selected.
+•	Which generation parameters are applied.
+10. Add advanced request schemas
+Create schemas/prompt_schema.py:
+</>Python
+from pydantic import BaseModel, Field
+
+
+class AdvancedLLMRequest(BaseModel):
+
+    prompt: str = Field(
+        ...,
+        min_length=5,
+        max_length=10000
+    )
+
+    template_name: str = Field(
+        default="general_assistant"
+    )
+
+    model_alias: str = Field(
+        default="fast"
+    )
+
+    max_output_tokens: int = Field(
+        default=500,
+        ge=1,
+        le=4000
+    )
+
+    temperature: float | None = Field(
+        default=None,
+        ge=0,
+        le=2
+    )
+
+
+This is the data contract between your client and your advanced LLM endpoint.
+11. Add the advanced LLM endpoint
+Open api/endpoints.py.
+Add this import:
+</>Python
+from schemas.prompt_schema import AdvancedLLMRequest
+
+Then add this endpoint. Keep your existing POST /requests endpoint unchanged.
+</>Python
+@router.post("/requests/advanced")
+def create_advanced_request(
+    request: AdvancedLLMRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
+    try:
+
+        result = generate_ai_response(
+            prompt=request.prompt,
+            max_output_tokens=request.max_output_tokens,
+            template_name=request.template_name,
+            model_alias=request.model_alias,
+            temperature=request.temperature
+        )
+
+        save_llm_request(
+            db=db,
+            request_data=result,
+            user_id=current_user.id
+        )
+
+        return {
+            "request_id": result["request_id"],
+            "model": result["model"],
+            "model_alias": result["model_alias"],
+            "template_name": result["template_name"],
+            "prompt_version": result["prompt_version"],
+            "status": result["status"],
+            "response": result["response"],
+            "input_tokens": result["input_tokens"],
+            "output_tokens": result["output_tokens"],
+            "total_tokens": result["total_tokens"]
+        }
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
+
+    except RuntimeError:
+
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed."
+        )
+
+Check that the imports already exist in your file:
+</>Python
+from fastapi import HTTPException, Depends
+from sqlalchemy.orm import Session
+
+from config.database import get_db
+from api.auth import get_current_user
+from models.user_model import User
+
+from services.llm_service import generate_ai_response
+from services.request_service import save_llm_request
+
+If you already imported any of these, don't duplicate them.
+12. Test prompt templates and model routing
+Restart FastAPI and open Swagger.
+Open Swagger UI
+Authenticate first using Day 14's JWT workflow.
+Now test:
+POST /requests/advanced
+Test A – General assistant
+</>JSON
+{
+  "prompt": "Explain what an API gateway does.",
+  "template_name": "general_assistant",
+  "model_alias": "fast",
+  "max_output_tokens": 300,
+  "temperature": 0.2
+}
+
+Test B – Technical assistant
+</>JSON
+{
+  "prompt": "Design a scalable architecture for a multi-tenant AI platform.",
+  "template_name": "technical_assistant",
+  "model_alias": "quality",
+  "max_output_tokens": 1000,
+  "temperature": null
+}
+
+
+Test C – Code assistant
+</>JSON
+{
+  "prompt": "Write a Python function to validate an email address.",
+  "template_name": "code_assistant",
+  "model_alias": "fast",
+  "max_output_tokens": 500,
+  "temperature": 0.3
+}
+
+Compare the results. The instructions should influence the style and structure of the generated answers.
+Note: your two aliases currently use the same underlying model unless you configure different model IDs in .env. The difference between the templates should still be visible.
+13. Structured JSON output
+This is an important capability for AI Platform Engineers.
+In ordinary text generation, an LLM might return:
+</>Plain text
+The candidate has Python experience and knows FastAPI.
+
+But your application may need structured data:
+</>JSON
+{
+  "candidate_name": "Rahul",
+  "skills": ["Python", "FastAPI"],
+  "experience_years": 4,
+  "suitable_for_role": true
+}
+
+This is useful for:
+•	Resume extraction.
+•	Recruitment intelligence.
+•	Invoice processing.
+•	Logistics document extraction.
+•	Automated business workflows.
+OpenAI's Structured Outputs feature can constrain model responses to a supplied JSON Schema, rather than relying only on a prompt asking for JSON. Your application should still validate business rules and handle refusals or incomplete output. 
+OpenAI API+1
+Create a structured response schema
+Create schemas/structured_output_schema.py:
+</>Python
+from pydantic import BaseModel, Field
+
+
+class CandidateAnalysis(BaseModel):
+
+    candidate_name: str = Field(
+        description="Candidate's full name"
+    )
+
+    skills: list[str] = Field(
+        description="Technical skills identified"
+    )
+
+    experience_years: int = Field(
+        description="Total years of experience"
+    )
+
+    suitable_for_role: bool = Field(
+        description="Whether the candidate appears suitable"
+    )
+
+Create a structured LLM service
+Add this function to services/llm_service.py:
+</>Python
+import json
+
+from schemas.structured_output_schema import CandidateAnalysis
+
+
+def generate_candidate_analysis(prompt: str):
+
+    schema = CandidateAnalysis.model_json_schema()
+
+    # Strict Structured Outputs requires all fields
+    # to be required and objects to disallow extra fields.
+    schema["additionalProperties"] = False
+
+    response = client.responses.create(
+        model=resolve_model("fast")["model"],
+        instructions=(
+            "Analyze the candidate information. "
+            "Extract only information supported by the input. "
+            "If a value is unknown, use an appropriate "
+            "neutral value rather than inventing facts."
+        ),
+        input=prompt,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "candidate_analysis",
+                "strict": True,
+                "schema": schema
+            }
+        }
+    )
+
+    if not response.output_text:
+        raise RuntimeError(
+            "No structured output was returned."
+        )
+
+    result = json.loads(response.output_text)
+
+    # Validate the result against our Pydantic model.
+    validated = CandidateAnalysis.model_validate(result)
+
+    return validated.model_dump()
+
+For this example, all four fields are required. The generated JSON is parsed and then validated by Pydantic.
+Add a structured endpoint
+Add to api/endpoints.py:
+</>Python
+from schemas.structured_output_schema import CandidateAnalysis
+from services.llm_service import generate_candidate_analysis
+
+
+@router.post(
+    "/requests/candidate-analysis",
+    response_model=CandidateAnalysis
+)
+def analyze_candidate(
+    request: LLMRequest,
+    current_user: User = Depends(get_current_user)
+):
+
+    try:
+
+        result = generate_candidate_analysis(
+            request.prompt
+        )
+
+        return result
+
+    except RuntimeError:
+        raise HTTPException(
+            status_code=502,
+            detail="Structured AI analysis failed."
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not process candidate analysis."
+        )
+
+Ensure LLMRequest is imported from schemas.request_schema.
+Test structured output
+POST /requests/candidate-analysis
+</>JSON
+{
+  "prompt": "Rahul has 4 years of experience in software development. He has worked with Python, FastAPI, PostgreSQL and Docker."
+}
+
+Expected response shape:
+</>JSON
+{
+  "candidate_name": "Rahul",
+  "skills": [
+    "Python",
+    "FastAPI",
+    "PostgreSQL",
+    "Docker"
+  ],
+  "experience_years": 4,
+  "suitable_for_role": true
+}
+
+The exact suitability assessment depends on the model's interpretation and the role criteria. In a production recruitment system, supply explicit role requirements and evaluate the result against them.
+14. Prompt versioning – an important production concept
+Suppose you update your technical assistant prompt from version 1.0 to version 1.1.
+You should be able to identify which prompt version generated a particular response.
+Your existing templates.py already contains:
+</>Python
+"version": "1.0"
+
+When you change the instructions, update it:
+</>Python
+"version": "1.1"
+
+Your advanced endpoint already returns:
+</>Python
+{
+  "template_name": "technical_assistant",
+  "prompt_version": "1.1"
+}
+
+In production, persist these fields with each request. This makes it possible to compare response quality between prompt versions.
+A good practice is to keep prompt templates in your code repository, review changes through Git, and test prompt changes before deployment. OpenAI also recommends code-managed prompts and evaluation tests for production applications. 
+OpenAI API
+15. Important configuration correction
+Before testing temperature, make your model capability configuration explicit.
+In services/model_router.py, use:
+</>Python
+"supports_temperature": (
+    os.getenv("OPENAI_FAST_SUPPORTS_TEMPERATURE", "false").lower()
+    == "true"
+)
+
+Do the same for the quality entry.
+Add this to .env:
+</>env
+OPENAI_FAST_SUPPORTS_TEMPERATURE=false
+OPENAI_QUALITY_SUPPORTS_TEMPERATURE=false
+
+Keep these false unless the selected model supports temperature. If it does, set the appropriate value to true.
+For your first tests, use "temperature": null. This avoids sending an unsupported parameter.
+16. Day 16 practical exercises
+Complete these independently.
+Exercise	Requirement
+1	Create a sql_assistant prompt template
+2	Create a resume_assistant prompt template
+3	Add a prompt_version to every template
+4	Add a third model alias called balanced
+5	Create /prompts/templates to list available templates
+6	Create /requests/structured for a structured business response
+7	Test invalid template names and invalid model aliases
+For exercise 5, your API should return something like:
+</>JSON
+{
+  "templates": [
+    {
+      "name": "general_assistant",
+      "version": "1.0"
+    },
+    {
+      "name": "technical_assistant",
+      "version": "1.0"
+    },
+    {
+      "name": "code_assistant",
+      "version": "1.0"
+    }
+  ]
+}
+
+17. AI Platform Engineer interview questions
+Try answering these without looking at the lesson.
+1.	What is prompt engineering?
+2.	What is the difference between system/developer instructions and user input?
+3.	Why should prompts be stored as reusable templates?
+4.	What is temperature?
+5.	What is model routing?
+6.	What is structured output?
+7.	What is the difference between JSON mode and Structured Outputs?
+8.	Why is prompt versioning important?
+9.	How would you select a model based on cost and latency?
+10.	How would you evaluate whether a new prompt version is better than the old one?
+Interview scenario:
+Your AI platform has 10,000 users. Some users need simple text classification, while others need complex document analysis.
+How would you design the prompt and model routing architecture?
+A strong answer should discuss:
+•	Task classification.
+•	Model capability registry.
+•	Cost and latency constraints.
+•	Prompt templates.
+•	Structured output schemas.
+•	Usage tracking.
+•	Evaluation and monitoring.
+•	Fallback and error handling.
+18. Day 16 completion tracker
+Day 16 progress
+0/9
+Created reusable prompt templates
+Implemented prompt service
+Created model routing configuration
+Updated LLM service with configurable parameters
+Created advanced LLM endpoint
+Tested general, technical and code templates
+Implemented structured JSON output
+Added prompt versioning
+Practised all 10 interview questions
+19. Day 17 preview
+Next lesson
+LLM Engineering – Streaming, Async Processing & Background Tasks
+•	Synchronous vs asynchronous APIs
+•	Python async and await
+•	Streaming LLM responses
+•	FastAPI background tasks
+•	Handling long-running AI requests
+•	Timeouts and concurrency
+•	Improving API responsiveness
+Day 16 milestone: Your AI Platform Gateway should now support reusable prompts, configurable model selection and structured outputs. These are core building blocks for production-grade AI applications.

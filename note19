@@ -1,0 +1,732 @@
+Document Processing, Chunking & RAG Architecture
+45-Day AI Platform Engineer Plan
+Week 3 · Day 19 of 45
+Yesterday, you built a semantic search engine using OpenAI embeddings and ChromaDB. Today, you'll turn it into a document intelligence pipeline.
+Today's objective: Upload a PDF or DOCX document, extract its text, split it into chunks, generate embeddings, store those chunks in ChromaDB, and retrieve relevant passages using a natural-language question.
+This is the foundation of an enterprise RAG (Retrieval-Augmented Generation) platform.
+
+2. Understand RAG architecture
+RAG combines two capabilities:
+•	Retrieval: Find relevant information from your own documents.
+•	Generation: Give that information to an LLM so it can formulate an answer.
+For example, imagine an organization has 10,000 employee policy documents. An employee asks:
+"What is the company's annual leave policy?"
+Instead of sending all 10,000 documents to the LLM, the platform retrieves only the most relevant passages and supplies them as context.
+RAG document ingestion pipeline
+PDF / DOCX / TXT documents
+Text extraction
+Extract readable content
+Text chunking
+Split into smaller passages with overlap
+Embedding generation
+Convert each chunk into a vector
+ChromaDB
+Store vectors, chunks and metadata
+
+Question-answering pipeline
+
+User question
+Retrieve relevant chunks
+LLM + retrieved context
+Grounded answer with sources
+
+3. What is document chunking?
+Suppose a PDF contains 100 pages. Sending the complete document to the LLM for every question is inefficient and can exceed context limits.
+Instead, split the document into smaller passages called chunks.
+Example:
+Original text:
+</>Plain text
+FastAPI is a modern Python framework.
+It supports asynchronous programming.
+It uses Pydantic for data validation.
+It automatically generates API documentation.
+With a simplified chunk size of 2 sentences:
+</>Plain text
+Chunk 1:
+FastAPI is a modern Python framework.
+It supports asynchronous programming.
+
+Chunk 2:
+It supports asynchronous programming.
+It uses Pydantic for data validation.
+
+Chunk 3:
+It uses Pydantic for data validation.
+It automatically generates API documentation.
+Notice that some text overlaps between chunks.
+Why overlap matters
+Without overlap, a meaningful sentence at the end of one chunk might lose its relationship with the next sentence.
+Parameter	Today's starting value
+Chunk size	500 words
+Chunk overlap	75 words
+Retrieval count (top_k)	3
+These are starting values, not universal best settings. Real chunking should be evaluated against document type, retrieval quality and model limits.
+4. Prepare your project
+We'll extend your existing AIPlatformGateway project rather than create a separate application.
+Install the document-processing packages in your activated VS Code terminal:
+python -m pip install pypdf python-docx python-multipart
+•	pypdf extracts text from PDF files.
+•	python-docx extracts text from Word documents.
+•	python-multipart enables file uploads through FastAPI.
+Add these packages to requirements.txt:
+</>Plain text
+pypdf
+python-docx
+python-multipart
+You should already have openai, chromadb, numpy and FastAPI from previous lessons.
+Today's project structure
+Add these files to your existing project:
+</>Plain text
+AIPlatformGateway/
+│
+├── api/
+│   ├── __init__.py
+│   ├── endpoints.py
+│   ├── auth.py
+│   ├── knowledge.py
+│   └── documents.py
+│
+├── config/
+│   ├── __init__.py
+│   ├── llm_config.py
+│   └── vector_config.py
+│
+├── schemas/
+│   ├── __init__.py
+│   ├── knowledge_schema.py
+│   └── document_schema.py
+│
+├── services/
+│   ├── __init__.py
+│   ├── embedding_service.py
+│   ├── vector_store.py
+│   └── document_processor.py
+│
+├── chroma_db/
+├── main.py
+├── .env
+└── requirements.txt
+
+Keep all your existing files. We are adding document ingestion and retrieval capabilities.
+5. Build the document extraction service
+Create services/document_processor.py.
+This service will:
+1.	Identify the uploaded file type.
+2.	Extract text from PDF, DOCX or TXT.
+3.	Split the extracted text into overlapping chunks.
+4.	Return the chunks with source information.
+</>Python
+
+from io import BytesIO
+from pathlib import Path
+
+from pypdf import PdfReader
+from docx import Document
+
+
+def extract_document_text(
+    file_bytes: bytes,
+    filename: str
+) -> list[dict]:
+
+    extension = Path(filename).suffix.lower()
+    extracted_pages = []
+
+    if extension == ".pdf":
+        reader = PdfReader(BytesIO(file_bytes))
+
+        if reader.is_encrypted:
+            raise ValueError("Encrypted PDFs are not supported.")
+
+        for page_number, page in enumerate(
+            reader.pages, start=1
+        ):
+            text = page.extract_text() or ""
+
+            if text.strip():
+                extracted_pages.append({
+                    "page_number": page_number,
+                    "text": text.strip()
+                })
+
+    elif extension == ".docx":
+        document = Document(BytesIO(file_bytes))
+
+        paragraphs = [
+            paragraph.text.strip()
+            for paragraph in document.paragraphs
+            if paragraph.text.strip()
+        ]
+
+        text = "\n".join(paragraphs)
+
+        if text:
+            extracted_pages.append({
+                "page_number": None,
+                "text": text
+            })
+
+    elif extension == ".txt":
+        text = file_bytes.decode("utf-8-sig").strip()
+
+        if text:
+            extracted_pages.append({
+                "page_number": None,
+                "text": text
+            })
+
+    else:
+        raise ValueError(
+            "Only PDF, DOCX and TXT files are supported."
+        )
+
+    if not extracted_pages:
+        raise ValueError(
+            "No readable text found in the document. "
+            "Scanned PDFs require OCR."
+        )
+
+    return extracted_pages
+
+
+def chunk_text(
+    text: str,
+    chunk_size: int = 500,
+    overlap: int = 75
+) -> list[str]:
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive.")
+
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError(
+            "overlap must be non-negative and smaller "
+            "than chunk_size."
+        )
+
+    words = text.split()
+
+    if not words:
+        return []
+
+    chunks = []
+    start = 0
+
+    while start < len(words):
+        end = min(start + chunk_size, len(words))
+
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+
+        if end == len(words):
+            break
+
+        start = end - overlap
+
+    return chunks
+Important: This is a simple word-based chunker for learning. Production systems often use token-based or structure-aware chunking to preserve headings, tables, paragraphs and other document boundaries.
+Test the chunking service
+Create test_chunking.py in your project root:
+</>Python
+
+from services.document_processor import chunk_text
+
+sample_text = """
+FastAPI is a modern Python framework.
+It supports asynchronous programming.
+Pydantic validates API request data.
+FastAPI generates interactive API documentation.
+"""
+
+chunks = chunk_text(
+    sample_text,
+    chunk_size=10,
+    overlap=3
+)
+
+for index, chunk in enumerate(chunks, start=1):
+    print(f"\nChunk {index}:")
+    print(chunk)
+
+Run:
+python test_chunking.py
+Observe how words from the end of one chunk appear at the beginning of the next.
+6. Generate embeddings for document chunks
+You already created services/embedding_service.py on Day 18.
+Use its existing generate_embeddings() function to create vectors in batches.
+The important distinction:
+•	Day 18: one text → one embedding.
+•	Day 19: one document → many chunks → many embeddings.
+Your existing function should support this:
+</>Python
+vectors = generate_embeddings([
+    "First document passage",
+    "Second document passage",
+    "Third document passage"
+])
+
+print(len(vectors))
+print(len(vectors[0]))
+
+The expected vector dimension is 1,536 when using the default text-embedding-3-small configuration.
+7. Store document chunks in ChromaDB
+Open services/vector_store.py.
+Keep your existing Day 18 functions, and add the following functions below them.
+</>Python
+
+from uuid import uuid4
+
+from config.vector_config import knowledge_collection
+from services.embedding_service import (
+    generate_embedding,
+    generate_embeddings
+)
+
+
+def index_document_chunks(
+    chunks: list[dict],
+    document_id: str,
+    filename: str,
+    user_id: int
+) -> int:
+
+    batch_size = 100
+    indexed_count = 0
+
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start:start + batch_size]
+
+        texts = [item["text"] for item in batch]
+        embeddings = generate_embeddings(texts)
+
+        ids = [str(uuid4()) for _ in batch]
+
+        metadatas = []
+
+        for item in batch:
+            metadatas.append({
+                "document_id": document_id,
+                "filename": filename,
+                "user_id": str(user_id),
+                "chunk_index": item["chunk_index"],
+                "page_number": (
+                    item["page_number"]
+                    if item["page_number"] is not None
+                    else -1
+                )
+            })
+
+        knowledge_collection.add(
+            ids=ids,
+            embeddings=embeddings,
+            documents=texts,
+            metadatas=metadatas
+        )
+
+        indexed_count += len(batch)
+
+    return indexed_count
+
+
+def search_document_chunks(
+    question: str,
+    user_id: int,
+    top_k: int = 3
+) -> list[dict]:
+
+    query_embedding = generate_embedding(question)
+
+    results = knowledge_collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        where={"user_id": str(user_id)},
+        include=[
+            "documents",
+            "metadatas",
+            "distances"
+        ]
+    )
+
+    matches = []
+
+    if not results["ids"]:
+        return matches
+
+    for document_id, text, metadata, distance in zip(
+        results["ids"][0],
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0]
+    ):
+        matches.append({
+            "chunk_id": document_id,
+            "document_id": metadata["document_id"],
+            "filename": metadata["filename"],
+            "chunk_index": metadata["chunk_index"],
+            "page_number": (
+                metadata["page_number"]
+                if metadata["page_number"] != -1
+                else None
+            ),
+            "content": text,
+            "distance": round(distance, 4),
+            "similarity_score": round(1 - distance, 4)
+        })
+
+    return matches
+
+The batch approach avoids sending an entire large document to the embedding API in one request.
+One architectural point: We are reusing the Day 18 ChromaDB collection, but using document_id and chunk_index metadata to distinguish document passages from the earlier knowledge records.
+8. Create the document API schemas
+Create schemas/document_schema.py:
+</>Python
+
+from pydantic import BaseModel, Field
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    filename: str
+    total_chunks: int
+    status: str
+
+
+class DocumentSearchRequest(BaseModel):
+    question: str = Field(
+        ...,
+        min_length=3,
+        max_length=5000
+    )
+
+    top_k: int = Field(
+        default=3,
+        ge=1,
+        le=10
+    )
+
+
+class RetrievedChunk(BaseModel):
+    chunk_id: str
+    document_id: str
+    filename: str
+    chunk_index: int
+    page_number: int | None
+    content: str
+    distance: float
+    similarity_score: float
+
+
+class DocumentSearchResponse(BaseModel):
+    question: str
+    total_results: int
+    results: list[RetrievedChunk]
+9. Build the document upload and search endpoints
+Create api/documents.py:
+</>Python
+
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile
+)
+
+from api.auth import get_current_user
+
+from schemas.document_schema import (
+    DocumentUploadResponse,
+    DocumentSearchRequest,
+    DocumentSearchResponse
+)
+
+from services.document_processor import (
+    extract_document_text,
+    chunk_text
+)
+
+from services.vector_store import (
+    index_document_chunks,
+    search_document_chunks
+)
+
+
+router = APIRouter(
+    prefix="/documents",
+    tags=["Document Intelligence"]
+)
+
+MAX_FILE_SIZE = 10 * 1024 * 1024
+
+ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".txt"
+}
+
+
+@router.post(
+    "/upload",
+    response_model=DocumentUploadResponse
+)
+def upload_document(
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user)
+):
+
+    filename = Path(file.filename or "").name
+    extension = Path(filename).suffix.lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF, DOCX and TXT files are supported."
+        )
+
+    file_bytes = file.file.read(MAX_FILE_SIZE + 1)
+
+    if not file_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty."
+        )
+
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File size cannot exceed 10 MB."
+        )
+
+    try:
+        extracted_pages = extract_document_text(
+            file_bytes,
+            filename
+        )
+
+        all_chunks = []
+
+        chunk_index = 0
+
+        for page in extracted_pages:
+            page_chunks = chunk_text(
+                page["text"],
+                chunk_size=500,
+                overlap=75
+            )
+
+            for chunk in page_chunks:
+                all_chunks.append({
+                    "chunk_index": chunk_index,
+                    "page_number": page["page_number"],
+                    "text": chunk
+                })
+
+                chunk_index += 1
+
+        if not all_chunks:
+            raise ValueError(
+                "No usable text chunks were created."
+            )
+
+        document_id = str(uuid4())
+
+        indexed_count = index_document_chunks(
+            chunks=all_chunks,
+            document_id=document_id,
+            filename=filename,
+            user_id=current_user.id
+        )
+
+        return {
+            "document_id": document_id,
+            "filename": filename,
+            "total_chunks": indexed_count,
+            "status": "indexed"
+        }
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail="Document processing or indexing failed."
+        )
+
+
+@router.post(
+    "/search",
+    response_model=DocumentSearchResponse
+)
+def search_documents(
+    request: DocumentSearchRequest,
+    current_user=Depends(get_current_user)
+):
+
+    try:
+        results = search_document_chunks(
+            question=request.question,
+            user_id=current_user.id,
+            top_k=request.top_k
+        )
+
+        return {
+            "question": request.question,
+            "total_results": len(results),
+            "results": results
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail="Document search failed."
+        )
+
+The endpoint has a 10 MB upload limit and accepts PDF, DOCX and TXT files. It does not yet support scanned PDFs, OCR, or tables and images embedded in documents.
+10. Register the router in main.py
+Add this import:
+</>Python
+from api.documents import router as documents_router
+
+Then register it with your other routers:
+</>Python
+app.include_router(documents_router)
+
+Do not remove your existing knowledge_router, auth_router, or other registrations.
+Restart your FastAPI server after saving the files.
+11. Test your document intelligence pipeline
+Start your application:
+fastapi dev main.py
+Open:
+Open FastAPI Swagger documentation
+Test A – Authenticate
+1.	Open /auth/token.
+2.	Log in with your existing user credentials.
+3.	Click Authorize and authenticate.
+Test B – Upload a document
+Open POST /documents/upload.
+Click Try it out, select a PDF, DOCX or TXT file, and execute.
+For your first test, use a small document containing readable text about FastAPI, Python or AI engineering.
+Expected response:
+</>JSON
+{
+  "document_id": "generated-uuid",
+  "filename": "fastapi_guide.pdf",
+  "total_chunks": 8,
+  "status": "indexed"
+}
+
+The chunk count will depend on your document's length.
+Test C – Search your document
+Open POST /documents/search.
+Submit:
+</>JSON
+{
+  "question": "How does FastAPI validate incoming API requests?",
+  "top_k": 3
+}
+
+{
+  "question": "How does FastAPI validate incoming API requests?",
+  "top_k": 3
+}
+
+Expected response structure:
+</>JSON
+{
+  "question": "How does FastAPI validate incoming API requests?",
+  "total_results": 3,
+  "results": [
+    {
+      "chunk_id": "generated-chunk-id",
+      "document_id": "generated-document-id",
+      "filename": "fastapi_guide.pdf",
+      "chunk_index": 2,
+      "page_number": 3,
+      "content": "FastAPI uses Pydantic models to validate incoming request data...",
+      "distance": 0.24,
+      "similarity_score": 0.76
+    }
+  ]
+}
+
+These values are illustrative, not actual results from your database.
+Test D – Verify persistence
+1.	Upload a document.
+2.	Search for information inside it.
+3.	Stop the FastAPI server.
+4.	Restart the server.
+5.	Search for the same information again.
+Your ChromaDB records should remain available because you're using PersistentClient.
+Test E – Verify user isolation
+Create or use a second user account.
+•	Authenticate as User 2.
+•	Search for a document indexed by User 1.
+•	Verify that User 2 cannot retrieve User 1's chunks.
+This is an important multi-tenant AI platform security requirement.
+12. Common errors and troubleshooting
+Error	Likely reason	What to check
+422 Unprocessable Entity	Incorrect upload or JSON input	Swagger request format
+413 Request Entity Too Large	File exceeds 10 MB	Upload a smaller file
+No readable text found	Scanned PDF or empty file	Use a text-based PDF or add OCR
+401 Unauthorized	Missing or expired JWT	Authenticate again
+502 Document processing failed	Embedding API or ChromaDB error	Check server logs and API configuration
+ModuleNotFoundError	Missing dependency	Install the relevant package
+Production engineering improvement: The example indexes chunks in batches, but if a later batch fails, earlier batches may already have been saved. A production ingestion pipeline should track ingestion status and implement cleanup or retry logic so partially indexed documents don't become available as complete documents.
+13. Interview preparation
+These are the questions you should be able to answer after today's lesson.
+Q1. What is RAG?
+Retrieval-Augmented Generation is an architecture that retrieves relevant information from external knowledge sources and supplies it to an LLM as context to generate grounded answers.
+Q2. Why do we chunk documents?
+To break large documents into manageable passages, improve retrieval precision and fit the retrieved context within model limits.
+Q3. What is chunk overlap?
+The shared text between consecutive chunks. It helps preserve contextual continuity when information crosses chunk boundaries.
+Q4. What is the difference between ingestion and retrieval?
+•	Ingestion: Extract, clean, chunk, embed and store documents.
+•	Retrieval: Embed a user query and find relevant stored chunks.
+Q5. Why do we store metadata in ChromaDB?
+To identify the source document, page, user, chunk number and other attributes, enabling filtering and source attribution.
+Q6. How would you process 10,000 enterprise documents?
+I would design an asynchronous ingestion pipeline:
+1.	Upload documents to object storage.
+2.	Create ingestion jobs in a persistent task database.
+3.	Push jobs into a queue such as Redis or RabbitMQ.
+4.	Workers extract text and perform OCR where necessary.
+5.	Chunk documents and generate embeddings in batches.
+6.	Store vectors and metadata in a vector database.
+7.	Track ingestion status, failures and retries.
+8.	Expose search APIs with tenant-level access control.
+Q7. How would you prevent one customer from accessing another customer's documents?
+Use tenant-aware metadata filters, authenticated user identity, authorization checks, isolated storage policies and tests that attempt cross-tenant retrieval.
+14. Day 19 completion checklist
+Day 19 progress
+0/10
+Install pypdf, python-docx and python-multipart.
+Extract text from a PDF file.
+Extract text from a DOCX file.
+Run the overlapping chunking exercise.
+Generate embeddings for multiple chunks.
+Index document chunks in ChromaDB.
+Upload a document through Swagger.
+Retrieve relevant passages using a natural-language question.
+Restart the application and verify persistence.
+Test isolation between two users.
+15. What's next – Day 20
+Day 20 – Build Your First Complete RAG Application
+You'll connect the components you've built:
+•	User question
+•	Query embedding
+•	ChromaDB retrieval
+•	Relevant context assembly
+•	OpenAI Responses API
+•	Grounded answer generation
+•	Source document references
+•	Handling questions when no relevant context is found
+Target outcome: Ask questions about an uploaded company document and receive answers grounded in that document, with source references.
+Your Day 19 milestone: Don't move to Day 20 until you can upload a document and retrieve relevant passages from it through Swagger.

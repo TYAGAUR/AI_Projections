@@ -1,0 +1,706 @@
+Async Processing, Streaming & Background Tasks
+Week 3 – Day 3
+3 hours
+AI Platform Engineer
+Today, we'll improve your AI Platform Gateway so it can handle slow LLM requests without making the entire application feel unresponsive.
+On Day 15, you integrated real OpenAI responses. On Day 16, you added prompt templates, model routing and structured output.
+Today, we'll introduce three important backend engineering concepts:
+1.	Asynchronous programming – handling I/O without blocking the event loop.
+2.	Streaming – returning AI output progressively instead of waiting for the complete answer.
+3.	Background processing – accepting long-running tasks and checking their status later.
+These are essential when building AI platforms that serve multiple users concurrently.
+2. Understand synchronous vs asynchronous processing
+Imagine 100 users submit prompts to your AI platform at the same time.
+Synchronous approach
+A request waits for the LLM response before its execution finishes. If the application performs blocking operations inside its request handler, those operations can prevent the event loop from serving other work.
+Asynchronous approach
+The application can wait for network operations without blocking the event loop, allowing it to handle other requests while the LLM provider processes a prompt.
+Synchronous execution
+1.	Request A starts
+2.	Request A waits for OpenAI
+3.	Request A finishes
+4.	Request B proceeds
+Asynchronous execution
+1.	Request A starts and awaits OpenAI
+2.	Request B can be processed while A is waiting
+3.	Request C can also be processed
+4.	Request A resumes when its response arrives
+Important distinction: async does not make the model generate tokens faster. It makes your server better at managing concurrent I/O.
+3. Learn Python async and await
+Create a new file named async_practice.py in your project root.
+Add:
+</>Python
+import asyncio
+import time
+
+
+async def process_request(request_id: int):
+
+    print(f"Request {request_id} started")
+
+    await asyncio.sleep(2)
+
+    print(f"Request {request_id} completed")
+
+    return f"Result {request_id}"
+
+
+async def main():
+
+    start_time = time.perf_counter()
+
+    results = await asyncio.gather(
+        process_request(1),
+        process_request(2),
+        process_request(3)
+    )
+
+    end_time = time.perf_counter()
+
+    print("Results:", results)
+
+    print(
+        "Total time:",
+        round(end_time - start_time, 2),
+        "seconds"
+    )
+
+
+asyncio.run(main())
+
+
+Run:
+python async_practice.py
+Expected result:
+</>Plain text 
+Request 1 started
+Request 2 started
+Request 3 started
+Request 1 completed
+Request 2 completed
+Request 3 completed
+
+Results: ['Result 1', 'Result 2', 'Result 3']
+Total time: approximately 2 seconds
+All three operations wait concurrently instead of taking approximately six seconds sequentially.
+Understand the syntax
+Syntax	Meaning
+async def	Defines a coroutine function
+await	Waits for an awaitable operation
+asyncio.run()	Starts an event loop
+asyncio.gather()	Runs multiple awaitables concurrently
+asyncio.sleep()	Simulates non-blocking waiting
+Try changing asyncio.gather() to sequential calls:
+</>Python
+result1 = await process_request(1)
+result2 = await process_request(2)
+result3 = await process_request(3)
+
+Notice the difference in execution time.
+4. Integrate asynchronous OpenAI requests
+Your Day 15 implementation uses the synchronous OpenAI client. We'll now add a separate asynchronous client.
+The OpenAI Python SDK provides AsyncOpenAI, which supports await and asynchronous network calls.
+Step 4.1 – Update config/llm_config.py
+Keep your existing synchronous client because Day 15 and Day 16 still use it. Add the asynchronous client:
+</>Python
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI, AsyncOpenAI
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+OPENAI_MODEL = os.getenv(
+    "OPENAI_MODEL",
+    "gpt-5.5"
+)
+
+OPENAI_TIMEOUT = float(
+    os.getenv("OPENAI_TIMEOUT", "30")
+)
+
+if not OPENAI_API_KEY:
+    raise RuntimeError(
+        "OPENAI_API_KEY is missing. Check your .env file."
+    )
+
+# Synchronous client – existing integration
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    timeout=OPENAI_TIMEOUT,
+    max_retries=2
+)
+
+# Asynchronous client – new integration
+async_client = AsyncOpenAI(
+    api_key=OPENAI_API_KEY,
+    timeout=OPENAI_TIMEOUT,
+    max_retries=2
+)
+
+Step 4.2 – Create services/async_llm_service.py
+</>Python
+from uuid import uuid4
+
+from openai import OpenAIError
+
+from config.llm_config import (
+    async_client,
+    OPENAI_MODEL
+)
+
+
+async def generate_ai_response_async(
+    prompt: str,
+    max_output_tokens: int = 500
+):
+
+    try:
+
+        response = await async_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a professional enterprise AI assistant. "
+                "Provide clear, accurate and useful answers."
+            ),
+            input=prompt,
+            max_output_tokens=max_output_tokens
+        )
+
+        generated_text = response.output_text
+
+        if not generated_text:
+            raise RuntimeError(
+                "The model returned no text output."
+            )
+
+        usage = response.usage
+
+        return {
+            "request_id": str(uuid4()),
+            "model": OPENAI_MODEL,
+            "status": "success",
+            "prompt": prompt,
+            "response": generated_text,
+            "input_tokens": usage.input_tokens if usage else 0,
+            "output_tokens": usage.output_tokens if usage else 0,
+            "total_tokens": usage.total_tokens if usage else 0
+        }
+
+    except OpenAIError as error:
+
+        print(
+            f"OpenAI async error: {type(error).__name__}"
+        )
+
+        raise RuntimeError(
+            "AI provider request failed."
+        ) from error
+
+Step 4.3 – Add an asynchronous API endpoint
+Open api/endpoints.py.
+Add the import:
+</>Python
+from services.async_llm_service import generate_ai_response_async
+Add:
+</>Python
+@router.post("/requests/async")
+async def create_async_request(
+    request: LLMRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
+    try:
+
+        result = await generate_ai_response_async(
+            prompt=request.prompt,
+            max_output_tokens=request.max_output_tokens
+        )
+
+        save_llm_request(
+            db=db,
+            request_data=result,
+            user_id=current_user.id
+        )
+
+        return result
+
+    except RuntimeError:
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed."
+        )
+This endpoint awaits the OpenAI network call without blocking the event loop.
+Important architecture note: Your current SQLAlchemy Session is synchronous. Its database operations can still block the event loop. This example keeps the existing database implementation for learning purposes. Later, we'll introduce async SQLAlchemy or move synchronous database work into a threadpool.
+5. Implement streaming LLM responses
+Normally, the API waits until the entire AI response has been generated.
+Streaming changes that.
+Instead of:
+</>Plain text
+User submits prompt
+       ↓
+Wait for complete AI response
+       ↓
+Return complete response
+
+We want:
+</>Plain text
+User submits prompt
+       ↓
+AI starts generating
+       ↓
+First text arrives
+       ↓
+More text arrives
+       ↓
+Final text arrives
+This is useful for chat applications, coding assistants and document analysis tools.
+ 
+Step 5.1 – Create services/streaming_service.py
+</>Python
+import json
+
+from openai import OpenAIError
+
+from config.llm_config import (
+    async_client,
+    OPENAI_MODEL
+)
+
+
+async def stream_ai_response(prompt: str):
+
+    try:
+
+        stream = await async_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a professional enterprise AI assistant. "
+                "Provide clear and useful responses."
+            ),
+            input=prompt,
+            stream=True
+        )
+
+        async for event in stream:
+
+            if event.type == "response.output_text.delta":
+
+                yield (
+                    "event: token\n"
+                    f"data: {json.dumps({'text': event.delta})}\n\n"
+                )
+
+            elif event.type == "response.completed":
+
+                usage = event.response.usage
+
+                usage_data = {
+                    "input_tokens": (
+                        usage.input_tokens if usage else 0
+                    ),
+                    "output_tokens": (
+                        usage.output_tokens if usage else 0
+                    ),
+                    "total_tokens": (
+                        usage.total_tokens if usage else 0
+                    )
+                }
+
+                yield (
+                    "event: completed\n"
+                    f"data: {json.dumps(usage_data)}\n\n"
+                )
+
+            elif event.type == "response.failed":
+
+                yield (
+                    "event: error\n"
+                    f"data: {json.dumps({'message': 'AI generation failed'})}\n\n"
+                )
+
+    except OpenAIError as error:
+
+        print(
+            f"Streaming error: {type(error).__name__}"
+        )
+
+        yield (
+            "event: error\n"
+            f"data: {json.dumps({'message': 'AI provider request failed'})}\n\n"
+        )
+
+This uses Server-Sent Events (SSE). Each event has a type and a data payload.
+The client can receive:
+•	token – a piece of generated text.
+•	completed – generation finished and usage is available.
+•	error – an error occurred.
+Step 5.2 – Create a streaming endpoint
+In api/endpoints.py, add:
+</>Python
+from fastapi.responses import StreamingResponse
+from services.streaming_service import stream_ai_response
+
+Then add:
+</>Python
+@router.post("/requests/stream")
+async def stream_request(
+    request: LLMRequest,
+    current_user: User = Depends(get_current_user)
+):
+
+    return StreamingResponse(
+        stream_ai_response(request.prompt),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+For this first exercise, streaming returns the generated text progressively but does not save the completed response to PostgreSQL. We'll add persistent streaming usage tracking in a later project iteration.
+6. Implement background task processing
+Streaming is useful when users want to see an answer as it is generated.
+But consider a different situation:
+A user uploads 500 pages of documents for analysis. The operation might take several minutes.
+You don't want the user to keep an HTTP request open for the entire operation.
+Instead, use this workflow:
+1.	Client submits a task.
+2.	API immediately returns a task ID.
+3.	Background worker processes the task.
+4.	Client checks task status.
+5.	Client retrieves the result when processing finishes.
+For today's learning exercise, we'll use FastAPI's BackgroundTasks.
+POST /requests/background
+Submit AI job
+Return task_id
+HTTP 202 Accepted
+Background worker
+Executes LLM request
+Completed		Failed
+ 
+
+Step 6.1 – Create a task service
+Create services/background_service.py:
+</>Python
+from uuid import uuid4
+
+from config.database import SessionLocal
+
+from services.llm_service import generate_ai_response
+from services.request_service import save_llm_request
+
+
+# In-memory task storage for learning purposes.
+TASKS = {}
+
+
+def submit_background_task(
+    prompt: str,
+    user_id: int
+):
+
+    task_id = str(uuid4())
+
+    TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "queued",
+        "user_id": user_id,
+        "result": None,
+        "error": None
+    }
+
+    return task_id
+
+
+def process_background_task(
+    task_id: str,
+    prompt: str,
+    user_id: int
+):
+
+    TASKS[task_id]["status"] = "processing"
+
+    db = SessionLocal()
+
+    try:
+
+        result = generate_ai_response(
+            prompt=prompt,
+            max_output_tokens=500
+        )
+
+        save_llm_request(
+            db=db,
+            request_data=result,
+            user_id=user_id
+        )
+
+        TASKS[task_id]["status"] = "completed"
+
+        TASKS[task_id]["result"] = {
+            "request_id": result["request_id"],
+            "model": result["model"],
+            "response": result["response"],
+            "input_tokens": result["input_tokens"],
+            "output_tokens": result["output_tokens"],
+            "total_tokens": result["total_tokens"]
+        }
+
+    except Exception:
+        db.rollback()
+
+        TASKS[task_id]["status"] = "failed"
+        TASKS[task_id]["error"] = (
+            "Background AI processing failed."
+        )
+
+    finally:
+        db.close()
+
+
+def get_background_task(
+    task_id: str,
+    user_id: int
+):
+
+    task = TASKS.get(task_id)
+
+    if not task or task["user_id"] != user_id:
+        return None
+
+    return task
+
+Step 6.2 – Add background endpoints
+Add these imports to api/endpoints.py:
+</>Python
+from fastapi import BackgroundTasks, status
+
+from services.background_service import (
+    submit_background_task,
+    process_background_task,
+    get_background_task
+)
+
+Add the submission endpoint:
+</>Python
+@router.post(
+    "/requests/background",
+    status_code=status.HTTP_202_ACCEPTED
+)
+def create_background_request(
+    request: LLMRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user)
+):
+
+    task_id = submit_background_task(
+        prompt=request.prompt,
+        user_id=current_user.id
+    )
+
+    background_tasks.add_task(
+        process_background_task,
+        task_id,
+        request.prompt,
+        current_user.id
+    )
+
+    return {
+        "task_id": task_id,
+        "status": "queued",
+        "message": "AI processing has been scheduled."
+    }
+
+Add the status endpoint:
+</>Python
+@router.get("/requests/background/{task_id}")
+def get_background_request_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user)
+):
+
+    task = get_background_task(
+        task_id=task_id,
+        user_id=current_user.id
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found."
+        )
+
+    return task
+
+Step 6.3 – Understand the limitation
+Learning implementation
+The TASKS dictionary is stored in application memory. This is not production-grade task storage.
+If your application restarts, the task information disappears. If you run multiple server workers, each worker has its own memory.
+For production AI platforms, consider:
+•	Celery with Redis or RabbitMQ.
+•	A persistent task table in PostgreSQL.
+•	Dedicated worker processes.
+•	Retry policies and dead-letter queues.
+•	Distributed task monitoring.
+FastAPI BackgroundTasks is useful for small, in-process tasks, but it is not a replacement for a distributed job queue.
+7. Test all three implementations
+Restart your application:
+fastapi dev main.py
+Open FastAPI Swagger UI and authenticate using Day 14's JWT login.
+Test A – Async request
+POST /requests/async
+</>JSON
+{
+  "prompt": "Explain how an AI platform handles 1000 concurrent requests.",
+  "max_output_tokens": 500
+}
+
+Expected: A complete AI response with actual token usage.
+Test B – Streaming request
+POST /requests/stream
+</>JSON
+{
+  "prompt": "Explain how an AI platform handles 1000 concurrent requests.",
+  "max_output_tokens": 500
+}
+
+Expected: A text/event-stream response containing progressively generated text.
+Swagger may display the streaming response as a raw response rather than a polished live chat. That's normal. We'll test the stream using a Python client below.
+Create test_stream.py in your project root:
+</>Python
+import requests
+import json
+
+BASE_URL = "http://127.0.0.1:8000"
+
+token = input("Enter your JWT access token: ")
+
+headers = {
+    "Authorization": f"Bearer {token}"
+}
+
+payload = {
+    "prompt": "Explain how RAG works.",
+    "max_output_tokens": 300
+}
+
+with requests.post(
+    f"{BASE_URL}/requests/stream",
+    headers=headers,
+    json=payload,
+    stream=True,
+    timeout=120
+) as response:
+
+    response.raise_for_status()
+
+    for line in response.iter_lines(decode_unicode=True):
+
+        if not line:
+            continue
+
+        if line.startswith("data: "):
+
+            data = json.loads(line[6:])
+
+            print(data)
+
+Run:
+python test_stream.py
+You should see multiple text chunks arriving before the completion event.
+Test C – Background request
+POST /requests/background
+</>JSON
+{
+  "prompt": "Explain the architecture of a production-grade AI platform.",
+  "max_output_tokens": 500
+}
+
+Expected response:
+</>JSON
+{
+  "task_id": "generated-uuid",
+  "status": "queued",
+  "message": "AI processing has been scheduled."
+}
+
+Copy the task_id.
+Then call:
+GET /requests/background/
+You may see one of these statuses:
+Status	Meaning
+queued	Waiting to execute
+processing	AI request running
+completed	Task finished
+failed	Task failed
+Once completed, the response will contain the generated AI result.
+8. Important production engineering considerations
+As an AI Platform Engineer, you should understand when to use each execution model.
+Requirement	Recommended approach
+Normal short API request	Async endpoint
+Chat response appearing progressively	Streaming
+Long-running document processing	Background job queue
+Large-scale distributed AI workloads	Dedicated workers and message broker
+Persistent task status	PostgreSQL or another durable store
+Additional concepts to learn:
+•	Concurrency: Multiple operations make progress during overlapping time periods.
+•	Parallelism: Multiple operations execute simultaneously, often using multiple CPU cores.
+•	Backpressure: Prevents incoming work from overwhelming downstream systems.
+•	Timeout: Limits how long an operation is allowed to run.
+•	Retry: Reattempts an operation after certain failures.
+•	Idempotency: Prevents duplicate effects when a request is retried.
+A particularly important interview point: asynchronous I/O improves concurrency, but it does not automatically solve database bottlenecks, provider rate limits or CPU-intensive processing.
+9. Day 17 interview questions
+Try answering these without looking at the lesson.
+1.	What is the difference between synchronous and asynchronous programming?
+2.	What is a coroutine in Python?
+3.	What is the purpose of async and await?
+4.	What is the difference between asyncio.gather() and sequential execution?
+5.	Why do we use AsyncOpenAI instead of OpenAI in asynchronous endpoints?
+6.	What is streaming in an LLM application?
+7.	What are Server-Sent Events?
+8.	What is the difference between streaming and background processing?
+9.	Why is FastAPI BackgroundTasks not sufficient for large distributed workloads?
+10.	How would you design an AI platform to process 10,000 document-analysis jobs?
+Interview scenario:
+A customer submits a document for AI analysis. Processing takes 90 seconds. Your API currently keeps the HTTP connection open until the result is ready.
+How would you redesign it?
+A good answer:
+1.	Accept the request and validate it.
+2.	Create a task record in PostgreSQL.
+3.	Enqueue the job in Redis or RabbitMQ.
+4.	Return HTTP 202 with a task ID.
+5.	A dedicated worker processes the document.
+6.	Update task status and store the result.
+7.	Allow the client to poll a status endpoint or receive updates through SSE/WebSockets.
+8.	Implement retries, timeouts, monitoring and idempotency.
+10. Day 17 completion tracker
+Day 17 progress
+0/10
+Understood synchronous vs asynchronous execution
+Completed Python async_practice.py
+Created AsyncOpenAI client
+Implemented POST /requests/async
+Implemented SSE streaming endpoint
+Tested streaming using Python client
+Implemented background task submission
+Implemented task status endpoint
+Understood distributed task queue limitations
+Practised interview questions
+11. Day 18 preview
+Next lesson
+LLM Engineering – Embeddings & Vector Databases
+You'll start learning the foundation of Retrieval Augmented Generation (RAG).
+•	What are embeddings?
+•	How text becomes numerical vectors
+•	Semantic similarity
+•	Vector search
+•	FAISS introduction
+•	ChromaDB introduction
+•	Building your first semantic search engine
+Day 17 milestone: Your AI Platform Gateway should now demonstrate three execution patterns: asynchronous inference, streaming responses and background task submission.
+One recommendation: don't move to Day 18 until you've successfully tested at least one async request and one streaming request. These concepts will become important when we build your production-style RAG platform.

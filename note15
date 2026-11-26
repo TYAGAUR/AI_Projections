@@ -1,0 +1,1283 @@
+Backend Integration, Authentication & Weekly Assessment
+We'll consolidate the backend skills covered in Days 8–13:
+•	FastAPI project architecture.
+•	PostgreSQL and SQLAlchemy revision.
+•	JWT authentication fundamentals.
+•	API testing and error handling.
+•	Environment variables and configuration.
+•	Backend project assessment.
+•	Week 2 interview mock test.
+Your Week 2 milestone: Build a backend that can receive AI requests, validate them, save them in PostgreSQL, retrieve and update records, and calculate usage analytics.
+The next major stage, beginning Day 15, is integrating actual LLM APIs into your platform.
+Day 14 – Backend Integration, JWT Authentication & Week 2 Assessment
+Week 2 – Final Day
+3 hours
+AI Platform Engineer
+Today, we'll take your existing AIPlatformGateway from a basic backend API to a more realistic platform with user authentication and protected endpoints.
+By the end of Day 14, you should be able to explain and implement:
+1.	How FastAPI, SQLAlchemy, PostgreSQL and Pydantic work together.
+2.	Password hashing and JWT authentication.
+3.	Protected API endpoints.
+4.	API error handling and configuration management.
+5.	A complete backend workflow suitable for an AI platform.
+
+2. Understand the architecture
+Your current project follows this flow:
+Client / Swagger UI
+Sends HTTP requests
+FastAPI – API Router
+Receives and routes requests
+Pydantic – Validation
+Checks request data and response structure
+Service Layer
+Business logic and authentication
+SQLAlchemy ORM
+Database operations
+PostgreSQL
+Persistent storage
+ 
+Important: JWT authentication adds a security layer. A protected endpoint verifies the token before allowing the request to reach its business logic.
+3. JWT authentication – fundamentals
+JWT stands for JSON Web Token.
+Imagine that a user registers on your AI platform and then logs in.
+1.	User submits email and password.
+2.	Backend verifies the password against its stored hash.
+3.	Backend generates a signed JWT.
+4.	Client stores the token securely.
+5.	Client sends the token with subsequent API requests.
+6.	Backend verifies the token and identifies the user.
+A typical request header looks like this:
+</>HTTP    
+Authorization: Bearer YOUR_ACCESS_TOKEN
+
+A JWT has three sections:
+</>Plain text
+xxxxx.yyyyy.zzzzz
+•	Header: token type and signing algorithm.
+•	Payload: claims such as user ID and expiration.
+•	Signature: verifies that the token has not been tampered with.
+Security rule: JWT payloads are encoded, not encrypted. Never put passwords, API keys or other secrets inside them.
+4. Install authentication packages
+Open the VS Code terminal, activate your existing virtual environment, and run:
+python -m pip install PyJWT "pwdlib[argon2]" python-multipart
+Add these lines to requirements.txt:
+</>Plain text
+fastapi[standard]
+pydantic
+sqlalchemy
+psycopg[binary]
+python-dotenv
+PyJWT
+pwdlib[argon2]
+python-multipart
+
+pwdlib will hash passwords using Argon2. PyJWT will create and verify JWTs. python-multipart supports form-based login in FastAPI's OAuth2 flow.
+5. Update your project structure
+Keep your existing files. Add the following authentication files:
+</>Plain text
+AIPlatformGateway/
+│
+├── main.py
+├── .env
+├── requirements.txt
+│
+├── api/
+│   ├── __init__.py
+│   ├── endpoints.py
+│   └── auth.py                 NEW
+│
+├── config/
+│   ├── __init__.py
+│   ├── database.py
+│   └── security.py             NEW
+│
+├── models/
+│   ├── __init__.py
+│   ├── user_model.py
+│   └── request_model.py
+│
+├── schemas/
+│   ├── __init__.py
+│   └── request_schema.py
+│
+└── services/
+    ├── __init__.py
+    ├── auth_service.py         NEW
+    ├── request_service.py
+    └── analytics_service.py
+
+6. Configure your JWT secret
+Open .env and add the following:
+</>env
+DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/ai_platform_db
+
+JWT_SECRET_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+Generate a strong secret in the VS Code Python terminal:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+Copy the generated value into JWT_SECRET_KEY.
+Do not commit .env to GitHub.
+7. Update the User database model
+Open models/user_model.py and replace its contents:
+</>Python
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import relationship
+
+from config.database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String(100), nullable=False)
+
+    email = Column(
+        String(150),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    password_hash = Column(
+        String(255),
+        nullable=True
+    )
+
+    requests = relationship(
+        "AIRequestRecord",
+        back_populates="user"
+    )
+
+Why is password_hash nullable?
+Your database may already contain users created on Day 13. This allows those existing records to remain valid. New registrations will always receive a password hash.
+Database migration required: Base.metadata.create_all() does not add columns to an existing table. Open pgAdmin → your database → Query Tool and run:
+</>SQL
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+Run this once.
+8. Create the security configuration
+Create config/security.py:
+</>Python
+import os
+from datetime import datetime, timedelta, timezone
+
+import jwt
+from dotenv import load_dotenv
+from pwdlib import PasswordHash
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY is missing from .env")
+
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+
+ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
+)
+
+password_hasher = PasswordHash.recommended()
+
+
+def hash_password(password: str) -> str:
+    return password_hasher.hash(password)
+
+
+def verify_password(
+    plain_password: str,
+    hashed_password: str
+) -> bool:
+    return password_hasher.verify(
+        plain_password,
+        hashed_password
+    )
+
+
+def create_access_token(user_id: int) -> str:
+
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+    payload = {
+        "sub": str(user_id),
+        "exp": expires_at
+    }
+
+    token = jwt.encode(
+        payload,
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    return token
+
+
+def decode_access_token(token: str):
+
+    return jwt.decode(
+        token,
+        SECRET_KEY,
+        algorithms=[ALGORITHM]
+    )
+
+9. Create authentication service
+Create services/auth_service.py:
+</>Python
+from sqlalchemy.orm import Session
+
+from models.user_model import User
+from config.security import (
+    hash_password,
+    verify_password
+)
+
+
+def register_user(
+    db: Session,
+    name: str,
+    email: str,
+    password: str
+):
+
+    existing_user = (
+        db.query(User)
+        .filter(User.email == email)
+        .first()
+    )
+
+    if existing_user:
+        return None
+
+    user = User(
+        name=name,
+        email=email,
+        password_hash=hash_password(password)
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return user
+
+
+def authenticate_user(
+    db: Session,
+    email: str,
+    password: str
+):
+
+    user = (
+        db.query(User)
+        .filter(User.email == email)
+        .first()
+    )
+
+    if not user or not user.password_hash:
+        return None
+
+    if not verify_password(
+        password,
+        user.password_hash
+    ):
+        return None
+
+    return user
+
+This separates authentication logic from your API endpoints.
+10. Add authentication schemas
+Open schemas/request_schema.py and add these classes. Keep your existing schemas.
+</>Python
+from pydantic import BaseModel, Field
+
+
+class UserRegister(BaseModel):
+    name: str = Field(
+        ...,
+        min_length=2,
+        max_length=100
+    )
+
+    email: str = Field(
+        ...,
+        min_length=5,
+        max_length=150
+    )
+
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128
+    )
+
+
+class UserPublicResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+
+The public response deliberately does not contain password_hash.
+11. Create the authentication API
+Create api/auth.py:
+</>Python
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status
+)
+
+from fastapi.security import (
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm
+)
+
+from sqlalchemy.orm import Session
+
+from config.database import get_db
+
+from config.security import (
+    create_access_token,
+    decode_access_token
+)
+
+from models.user_model import User
+
+from schemas.request_schema import (
+    UserRegister,
+    UserPublicResponse,
+    TokenResponse
+)
+
+from services.auth_service import (
+    register_user,
+    authenticate_user
+)
+
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"]
+)
+
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/auth/token"
+)
+
+
+@router.post(
+    "/register",
+    response_model=UserPublicResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def register(
+    user_data: UserRegister,
+    db: Session = Depends(get_db)
+):
+
+    user = register_user(
+        db=db,
+        name=user_data.name,
+        email=user_data.email,
+        password=user_data.password
+    )
+
+    if user is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Email already registered"
+        )
+
+    return user
+
+
+@router.post(
+    "/token",
+    response_model=TokenResponse
+)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+
+    user = authenticate_user(
+        db=db,
+        email=form_data.username,
+        password=form_data.password
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    access_token = create_access_token(user.id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired authentication token",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+    try:
+        payload = decode_access_token(token)
+
+        user_id = payload.get("sub")
+
+        if user_id is None:
+            raise credentials_exception
+
+        user_id = int(user_id)
+
+    except (Exception):
+        raise credentials_exception
+
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
+
+    if user is None:
+        raise credentials_exception
+
+    return user
+
+
+@router.get(
+    "/me",
+    response_model=UserPublicResponse
+)
+def get_my_profile(
+    current_user: User = Depends(get_current_user)
+):
+
+    return current_user
+
+Important: In the login form, enter the user's email in the field named username. That is the standard field name used by OAuth2PasswordRequestForm.
+12. Register the authentication router
+Open main.py.
+Keep your existing database imports, lifespan and existing API router. Add the authentication router:
+</>Python
+from api.auth import router as auth_router
+
+Then, after creating your FastAPI app, include it:
+</>Python
+app.include_router(auth_router)
+
+For example, the relevant part should look like:
+</>Python
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+from config.database import Base, engine
+
+from models.request_model import AIRequestRecord
+from models.user_model import User
+
+from api.endpoints import router as api_router
+from api.auth import router as auth_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    Base.metadata.create_all(bind=engine)
+
+    yield
+
+
+app = FastAPI(
+    title="AI Platform Gateway",
+    description="Backend gateway for AI model management and requests",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+app.include_router(api_router)
+app.include_router(auth_router)
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "AI Platform Gateway is running"
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+
+If your existing main.py has other configuration, retain it rather than duplicating the app declaration.
+13. Protect an existing API endpoint
+Now let's apply authentication to your existing API.
+Open api/endpoints.py.
+For example, find your existing history endpoint:
+</>Python
+@router.get("/requests/history")
+def request_history(
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    return get_all_requests(
+        db,
+        limit=limit,
+        offset=offset
+    )
+Update it to:
+</>Python
+from api.auth import get_current_user
+from models.user_model import User
+
+
+@router.get("/requests/history")
+def request_history(
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return get_all_requests(
+        db,
+        limit=limit,
+        offset=offset
+    )
+
+Now this endpoint requires a valid JWT.
+For production, you should also filter the returned records by current_user.id. Authentication alone does not guarantee that users can only see their own data.
+For example, add this to services/request_service.py:
+</>Python
+def get_user_requests(
+    db: Session,
+    user_id: int,
+    limit: int = 10,
+    offset: int = 0
+):
+    return (
+        db.query(AIRequestRecord)
+        .filter(AIRequestRecord.user_id == user_id)
+        .order_by(AIRequestRecord.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+Then create a separate endpoint:
+</>Python
+@router.get("/users/me/requests")
+def my_requests(
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return get_user_requests(
+        db,
+        user_id=current_user.id,
+        limit=limit,
+        offset=offset
+    )
+
+This is the correct direction for a multi-user AI platform. Make sure new AI requests also save the authenticated user's ID:
+</>Python
+save_ai_request(
+    db,
+    request_data=response_data,
+    user_id=current_user.id
+)
+
+You will need to add current_user: User = Depends(get_current_user) to your POST /requests endpoint for that change.
+14. Test the authentication workflow
+Start the application:
+fastapi dev main.py
+
+Open:
+Open FastAPI Swagger documentation
+Follow these tests in order.
+Test 1 – Register a user
+POST /auth/register
+Request body:
+</>JSON
+{
+  "name": "Platform Admin",
+  "email": "admin@example.com",
+  "password": "SecurePass123!"
+}
+
+Expected response:
+</>JSON
+{
+  "id": 1,
+  "name": "Platform Admin",
+  "email": "admin@example.com"
+}
+
+Notice that the password is not returned.
+Test 2 – Login
+POST /auth/token
+In Swagger, select Try it out.
+Enter:
+Field	Value
+username	admin@example.com
+password	SecurePass123!
+Expected response:
+</>JSON
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "bearer"
+}
+
+Copy the complete access token.
+Test 3 – Authenticate in Swagger
+1.	Click the Authorize button.
+2.	Enter your email in the username field and your password in the password field.
+3.	Authorize and close the dialog.
+Swagger will use the returned bearer token for endpoints that require authentication.
+Test 4 – Get current user
+GET /auth/me
+Expected response:
+</>JSON
+{
+  "id": 1,
+  "name": "Platform Admin",
+  "email": "admin@example.com"
+}
+
+Test 5 – Test protected history
+GET /requests/history
+•	With a valid token: the endpoint should respond.
+•	Without a token: expect HTTP 401.
+•	With an invalid or expired token: expect HTTP 401.
+Test 6 – Duplicate registration
+Try registering the same email again.
+Expected status: 409 Conflict.
+15. Important backend concepts to revise
+Concept	What you should understand
+ORM	Maps Python objects to database tables
+SQLAlchemy Session	Manages database operations and transactions
+Pydantic	Validates incoming and outgoing data
+Dependency Injection	Provides shared resources such as database sessions
+JWT	Signed token used to authenticate requests
+Password Hashing	Stores password hashes instead of plaintext passwords
+HTTP 401	Authentication is missing or invalid
+HTTP 403	User is authenticated but not permitted
+HTTP 404	Requested resource does not exist
+HTTP 409	Request conflicts with existing data
+HTTP 422	Request validation failed
+Pagination	Retrieves data in manageable pages
+Database Relationship	Connects users and their AI requests
+Production security reminders:
+•	Use HTTPS in production.
+•	Keep JWT secrets outside source control.
+•	Use short-lived access tokens and consider refresh-token rotation.
+•	Add rate limiting to login and registration.
+•	Enforce user-level authorization on every private resource.
+•	Use Alembic migrations rather than relying on create_all() for schema changes.
+•	Avoid exposing internal exception messages or sensitive information.
+16. Week 2 assessment
+Backend Engineering – 20 marks
+Try answering these without referring to the lesson.
+Part A – Interview questions (10 marks)
+1.	What is the difference between FastAPI and Flask?
+2.	Why do we use Pydantic in FastAPI?
+3.	What is SQLAlchemy ORM?
+4.	What is the difference between flush() and commit()?
+5.	What is JWT authentication?
+6.	What are the three parts of a JWT?
+7.	Why should passwords be hashed?
+8.	What is dependency injection?
+9.	What is the difference between HTTP 401 and 403?
+10.	Why do we need database migrations?
+Part B – Coding exercises (10 marks)
+Exercise	Marks
+Create a new user registration endpoint	2
+Generate a JWT after successful login	2
+Create a protected /auth/me endpoint	2
+Implement user-specific request history	2
+Handle duplicate emails and invalid tokens	2
+Part C – Practical project checklist
+Day 14 completion
+0/10
+Existing FastAPI endpoints are working
+PostgreSQL connection is working
+SQLAlchemy user and request models are working
+Password hashing is implemented
+User registration is working
+JWT login is working
+Swagger Authorize is working
+Protected endpoint returns HTTP 401 without token
+User-specific request history is implemented
+No secrets are committed to GitHub
+17. Week 2 mock interview – sample answers
+Q1. Explain the architecture of your AI Platform Gateway.
+My application uses FastAPI for REST API development, Pydantic for request validation, SQLAlchemy as the ORM and PostgreSQL for persistent storage. I separated API routes, business services, schemas, database models and configuration into independent modules. I also implemented JWT authentication to protect user-specific resources.
+Q2. How does JWT authentication work in your application?
+When a user logs in, the backend verifies their password against the stored Argon2 hash. If valid, it generates a signed JWT containing the user's ID and expiration time. The client sends that token in the Authorization header. FastAPI verifies the signature and expiration before allowing access to protected endpoints.
+Q3. How would you scale this backend for multiple AI models?
+I would separate model-provider integrations into independent adapter services, introduce a model registry, use asynchronous request handling where appropriate, add Redis for caching and rate limiting, and use background workers for long-running tasks. I would also introduce centralized logging, metrics, tracing and usage-based quotas.
+18. What comes next – Day 15
+Next module
+Real LLM Integration with OpenAI
+You'll move from simulated AI responses to real model execution.
+Topics:
+•	OpenAI API integration
+•	API key management using environment variables
+•	Building an LLM service layer
+•	Sending prompts and receiving model responses
+•	Token usage and cost tracking
+•	Handling API failures, timeouts and rate limits
+•	Connecting LLM execution to your existing POST /requests endpoint
+Your Day 14 target: Complete registration, login, JWT generation and protected endpoint testing before starting Day 15.
+Day 15 – Real LLM Integration with OpenAI
+Week 3 – Day 1
+3 hours
+AI Platform Engineer
+Today, we're moving from simulated AI responses to real LLM execution.
+Until Day 14, your AI Platform Gateway generated simulated responses. Today, we'll connect it to an actual OpenAI model so that a user can submit a prompt through your FastAPI endpoint and receive a real AI-generated response.
+By the end of today, your application will support:
+1.	Real OpenAI API integration.
+2.	Secure API key management.
+3.	Prompt submission through FastAPI.
+4.	Actual LLM responses.
+5.	Token usage tracking.
+6.	Error handling for API failures.
+
+2. Understand the architecture
+Your application will now follow this flow:
+Client / Swagger UI
+Submits prompt
+FastAPI – POST /requests
+Authentication + Validation
+JWT and Pydantic
+LLM Service Layer
+Prepares and executes model request
+OpenAI API
+Real model inference
+PostgreSQL
+Request, response and usage records
+ 
+
+3. Understand the OpenAI API
+An LLM (Large Language Model) receives input text and generates output text based on its learned patterns and instructions.
+For example:
+Input prompt
+</>Plain text
+Explain Retrieval Augmented Generation in simple terms.
+
+LLM response
+</>Plain text
+Retrieval Augmented Generation (RAG) is a technique
+that allows an AI model to retrieve relevant information
+from external documents before generating an answer.
+Your application sends the prompt to the OpenAI API rather than generating the response itself.
+Important concepts
+Concept	Meaning
+Model	The AI model processing your prompt
+Prompt	Input instructions or question
+Completion	Generated output
+Temperature	Controls response variability where supported
+Input tokens	Tokens sent to the model
+Output tokens	Tokens generated by the model
+Context window	Maximum tokens a model can process
+API key	Credential used to authenticate API calls
+A token is a piece of text, not necessarily a complete word.
+4. Get your OpenAI API key
+You need an API key and an API account with available billing/credits. ChatGPT subscriptions and API billing are separate.
+Open:
+OpenAI API Keys
+Steps:
+1.	Sign in to your OpenAI developer platform account.
+2.	Create a new secret key.
+3.	Copy the key immediately.
+4.	Do not share it or paste it into GitHub.
+5.	Keep it in your local .env file.
+
+Security rule
+Never hardcode your OpenAI API key in Python source code. Never expose it in an API response or application log.
+
+5. Install the OpenAI Python SDK
+In your activated VS Code terminal:
+python -m pip install --upgrade openai
+Add this to requirements.txt:
+</>Plain text
+Openai
+
+The current official Python SDK supports the Responses API, which we'll use for text generation. It returns generated text through response.output_text and token usage through response.usage. 
+OpenAI API Reference+2
+6. Update your environment configuration
+Add these variables to your existing .env:
+</>env
+OPENAI_API_KEY=your_actual_api_key_here
+OPENAI_MODEL=gpt-5.5
+OPENAI_TIMEOUT=30
+
+The model name is configurable. If gpt-5.5 is not available to your API project, use a model that your account can access.
+Update config/security.py only if necessary; do not put the OpenAI key there. We'll create a separate configuration module for the LLM.
+7. Create the OpenAI configuration
+Create config/llm_config.py:
+</>Python
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
+OPENAI_TIMEOUT = float(
+    os.getenv("OPENAI_TIMEOUT", "30")
+)
+
+if not OPENAI_API_KEY:
+    raise RuntimeError(
+        "OPENAI_API_KEY is missing. Check your .env file."
+    )
+
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    timeout=OPENAI_TIMEOUT,
+    max_retries=2
+)
+
+What this code does:
+•	Loads the API key from .env.
+•	Reads the selected model name.
+•	Sets a 30-second timeout.
+•	Retries certain transient failures twice.
+•	Creates a reusable OpenAI client.
+8. Build the real LLM service
+Create services/llm_service.py:
+</>Python
+from uuid import uuid4
+
+from openai import OpenAIError
+
+from config.llm_config import client, OPENAI_MODEL
+
+
+def generate_ai_response(
+    prompt: str,
+    max_output_tokens: int = 500
+):
+    """
+    Sends a prompt to OpenAI and returns
+    the generated response and token usage.
+    """
+
+    try:
+
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are an AI assistant inside an "
+                "enterprise AI platform. Provide accurate, "
+                "clear and professional responses."
+            ),
+            input=prompt,
+            max_output_tokens=max_output_tokens
+        )
+
+        generated_text = response.output_text
+
+        if not generated_text:
+            raise RuntimeError(
+                "The model returned no text output."
+            )
+
+        usage = response.usage
+
+        input_tokens = (
+            usage.input_tokens if usage else 0
+        )
+
+        output_tokens = (
+            usage.output_tokens if usage else 0
+        )
+
+        total_tokens = (
+            usage.total_tokens if usage else 0
+        )
+
+        return {
+            "request_id": str(uuid4()),
+            "model": OPENAI_MODEL,
+            "status": "success",
+            "prompt": prompt,
+            "response": generated_text,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens
+        }
+
+    except OpenAIError as error:
+
+        # Log the technical error on the server,
+        # but do not expose credentials or raw details.
+        print(f"OpenAI API error: {type(error).__name__}")
+
+        raise RuntimeError(
+            "The AI provider could not process the request."
+        ) from error
+
+Understand the important code
+</>Python
+response = client.responses.create(
+    model=OPENAI_MODEL,
+    input=prompt
+)
+
+This is the actual API call. Your prompt goes to the selected OpenAI model.
+</>Python
+generated_text = response.output_text
+
+This retrieves the generated text.
+</>Python
+input_tokens = response.usage.input_tokens
+
+This retrieves the input-token count.
+</>Python
+output_tokens = response.usage.output_tokens
+
+This retrieves the output-token count.
+</>Python
+total_tokens = response.usage.total_tokens
+
+This retrieves total token usage.
+The usage values are returned by the API; they are not estimates based on word counts. 
+OpenAI API Reference+1
+9. Add LLM request and response schemas
+Open schemas/request_schema.py.
+Keep your existing classes and add:
+</>Python
+from pydantic import BaseModel, Field
+
+
+class LLMRequest(BaseModel):
+
+    prompt: str = Field(
+        ...,
+        min_length=5,
+        max_length=20000,
+        description="Prompt sent to the AI model"
+    )
+
+    max_output_tokens: int = Field(
+        default=500,
+        ge=1,
+        le=4000
+    )
+
+
+class LLMResponse(BaseModel):
+
+    request_id: str
+
+    model: str
+
+    status: str
+
+    response: str
+
+    input_tokens: int
+
+    output_tokens: int
+
+    total_tokens: int
+
+We are deliberately not allowing the client to select arbitrary model names today. Your platform controls the model through environment configuration. This is a useful first step towards model governance and cost control.
+10. Save real AI requests in PostgreSQL
+Your Day 13 database model already contains the columns needed to store requests and token usage.
+Open services/request_service.py and add this function. Keep your existing functions.
+</>Python
+from models.request_model import AIRequestRecord
+
+
+def save_llm_request(
+    db,
+    request_data: dict,
+    user_id: int
+):
+    record = AIRequestRecord(
+        request_id=request_data["request_id"],
+        user_id=user_id,
+        model=request_data["model"],
+        provider="OpenAI",
+        prompt=request_data["prompt"],
+        status=request_data["status"],
+        input_tokens=request_data["input_tokens"],
+        output_tokens=request_data["output_tokens"],
+        total_tokens=request_data["total_tokens"]
+    )
+
+    try:
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        return record
+
+    except Exception:
+        db.rollback()
+        raise
+
+Notice that we store the authenticated user's ID. This means the request history can be associated with the person who submitted it.
+11. Connect the LLM service to FastAPI
+Open api/endpoints.py.
+First, add these imports alongside your existing imports:
+</>Python
+from fastapi import Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from config.database import get_db
+
+from api.auth import get_current_user
+from models.user_model import User
+
+from schemas.request_schema import (
+    LLMRequest,
+    LLMResponse
+)
+
+from services.llm_service import generate_ai_response
+
+from services.request_service import save_llm_request
+
+Now locate your existing POST /requests endpoint.
+Replace the old simulated POST /requests endpoint with this implementation. Do not create a second endpoint with the same route and method.
+</>Python
+@router.post(
+    "/requests",
+    response_model=LLMResponse
+)
+def create_ai_request(
+    request: LLMRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
+    try:
+
+        # Step 1: Execute the real AI model
+        result = generate_ai_response(
+            prompt=request.prompt,
+            max_output_tokens=request.max_output_tokens
+        )
+
+        # Step 2: Save the request and usage
+        save_llm_request(
+            db=db,
+            request_data=result,
+            user_id=current_user.id
+        )
+
+        # Step 3: Return the model response
+        return LLMResponse(
+            request_id=result["request_id"],
+            model=result["model"],
+            status=result["status"],
+            response=result["response"],
+            input_tokens=result["input_tokens"],
+            output_tokens=result["output_tokens"],
+            total_tokens=result["total_tokens"]
+        )
+
+    except RuntimeError:
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed."
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="An internal server error occurred."
+        )
+
+This endpoint does three important jobs:
+1.	Calls the real OpenAI model.
+2.	Saves the request and token usage in PostgreSQL.
+3.	Returns the generated response to the client.
+It also requires a valid JWT, using the authentication functionality from Day 14.
+Request lifecycle
+1.	Client submits a prompt and bearer token.
+2.	FastAPI validates the request and authenticates the user.
+3.	LLM service calls OpenAI.
+4.	OpenAI returns generated text and token usage.
+5.	SQLAlchemy stores the request in PostgreSQL.
+6.	FastAPI returns the response.
+12. Test your real AI integration
+Start your application:
+fastapi dev main.py
+Open:
+Open your AI Platform Gateway Swagger UI
+First, authenticate using the Day 14 /auth/token endpoint and Swagger's Authorize button.
+Then execute:
+POST /requests
+Request:
+</>JSON
+{
+  "prompt": "Explain RAG architecture in simple terms. Include one practical enterprise use case.",
+  "max_output_tokens": 500
+}
+Expected response structure:
+</>JSON
+{
+  "request_id": "generated-uuid",
+  "model": "gpt-5.5",
+  "status": "success",
+  "response": "Retrieval Augmented Generation (RAG) ...",
+  "input_tokens": 25,
+  "output_tokens": 120,
+  "total_tokens": 145
+}
+
+The response text and token counts above are illustrative, not actual API results.
+Verify the database
+Open pgAdmin → Query Tool and execute:
+</>SQL
+SELECT
+    request_id,
+    user_id,
+    model,
+    provider,
+    status,
+    input_tokens,
+    output_tokens,
+    total_tokens,
+    created_at
+FROM ai_requests
+ORDER BY created_at DESC;
+
+You should see your actual AI request and its token usage.
+To check which users submitted requests:
+</>SQL
+SELECT
+    u.name,
+    u.email,
+    COUNT(r.id) AS total_requests,
+    COALESCE(SUM(r.total_tokens), 0) AS total_tokens
+FROM users u
+LEFT JOIN ai_requests r
+    ON u.id = r.user_id
+GROUP BY u.id, u.name, u.email;
+
+This is your first basic AI usage analytics query.
+13. Common errors and how to fix them
+Error	Possible cause	What to check
+401 Unauthorized	Invalid API key	Check OPENAI_API_KEY
+429 Too Many Requests	Rate limit or insufficient quota	Check API usage, billing and limits
+404 Not Found	Model unavailable	Check OPENAI_MODEL
+Connection error	Network or connectivity problem	Check internet and firewall
+APIRemovedInV1	Old or incompatible SDK code	Upgrade openai and use the Responses API
+OPENAI_API_KEY is missing	Environment variable not loaded	Check .env location and spelling
+500 Internal Server Error	Application/database error	Check the VS Code terminal traceback
+Official documentation:
+•	OpenAI text generation guide
+•	OpenAI Python SDK reference
+•	OpenAI API error codes
+14. Day 15 coding exercises
+Complete these independently after the main integration works.
+Exercise 1 – Change the system instructions
+Modify the instructions in llm_service.py so the AI behaves as an enterprise technical assistant.
+Exercise 2 – Add a model configuration endpoint
+Create:
+</>HTTP
+GET /config/llm
+
+Return:
+</>JSON
+{
+  "provider": "OpenAI",
+  "model": "gpt-5.5",
+  "integration_status": "configured"
+}
+
+Do not return the API key.
+Exercise 3 – Add a prompt length restriction
+Reject prompts longer than 10,000 characters.
+Exercise 4 – Add usage analytics
+Create:
+</>HTTP    
+GET /usage/me
+
+Return the authenticated user's total requests and token consumption. Use SQLAlchemy aggregation and filter by current_user.id.
+Exercise 5 – Add a request duration measurement
+Measure how long the OpenAI API call takes and return duration_ms in your API response. Do not confuse model inference time with total end-to-end API latency.
+15. AI Platform Engineer interview questions
+Try answering these verbally.
+Q1. What is an LLM API?
+An LLM API allows an application to send input prompts to a hosted language model and receive generated responses through an HTTP interface.
+Q2. What is the difference between a prompt and a completion?
+A prompt is the input provided to the model. The completion or generated output is the model's response.
+Q3. What is token usage?
+Token usage measures the amount of text processed by the model. It includes input tokens and output tokens and is important for monitoring API consumption and costs.
+Q4. Why do you use a separate LLM service layer?
+It separates model execution from API routing. This makes it easier to maintain, test and replace model providers without rewriting the API endpoints.
+Q5. How would you support multiple LLM providers?
+I would introduce a common provider interface and separate implementations for OpenAI, Anthropic and Google. A model registry or routing service would select the appropriate provider based on configuration and request requirements.
+Q6. What happens if the OpenAI API becomes unavailable?
+The application should handle provider errors, enforce timeouts, retry transient failures with backoff, log failures and return a controlled error to the client. For production systems, I would also consider circuit breakers and fallback providers.
+Q7. How would you monitor LLM costs?
+I would record provider, model, input tokens, output tokens, request duration and request status. I would then calculate cost using the applicable model-specific pricing and build user-level and organization-level usage dashboards.
+16. Day 15 completion checklist
+Implementation progress
+0/10
+OpenAI SDK installed
+API key configured in .env
+OpenAI client created
+Responses API successfully called
+Real AI response received
+Token usage captured
+Request saved in PostgreSQL
+JWT authentication working
+Database records associated with the logged-in user
+API error handling tested
+17. What's coming on Day 16?
+Next lesson
+LLM Engineering – Prompt Engineering & Model Parameters
+You will learn how to make your AI platform more configurable and reliable.
+•	System, developer and user instructions
+•	Prompt templates
+•	Temperature and generation parameters
+•	Model selection and routing
+•	Structured JSON output
+•	Prompt versioning
+•	Building reusable prompt services
+Your Day 15 milestone: Your POST /requests endpoint should now generate a real response from OpenAI and save actual token usage against the authenticated user. Don't move on until this workflow works end-to-end.

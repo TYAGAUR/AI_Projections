@@ -1,0 +1,755 @@
+Backend Integration, JWT Authentication & Week 2 Assessment
+Week 2 – Final Day
+3 hours
+AI Platform Engineer
+Today, we'll take your existing AIPlatformGateway from a basic backend API to a more realistic platform with user authentication and protected endpoints.
+By the end of Day 14, you should be able to explain and implement:
+1.	How FastAPI, SQLAlchemy, PostgreSQL and Pydantic work together.
+2.	Password hashing and JWT authentication.
+3.	Protected API endpoints.
+4.	API error handling and configuration management.
+5.	A complete backend workflow suitable for an AI platform.
+
+2. Understand the architecture
+Your current project follows this flow:
+Client / Swagger UI
+Sends HTTP requests
+FastAPI – API Router
+Receives and routes requests
+Pydantic – Validation
+Checks request data and response structure
+Service Layer
+Business logic and authentication
+SQLAlchemy ORM
+Database operations
+PostgreSQL
+Persistent storage
+ 
+Important: JWT authentication adds a security layer. A protected endpoint verifies the token before allowing the request to reach its business logic.
+3. JWT authentication – fundamentals
+JWT stands for JSON Web Token.
+Imagine that a user registers on your AI platform and then logs in.
+1.	User submits email and password.
+2.	Backend verifies the password against its stored hash.
+3.	Backend generates a signed JWT.
+4.	Client stores the token securely.
+5.	Client sends the token with subsequent API requests.
+6.	Backend verifies the token and identifies the user.
+A typical request header looks like this:
+</>HTTP    
+Authorization: Bearer YOUR_ACCESS_TOKEN
+
+A JWT has three sections:
+</>Plain text
+xxxxx.yyyyy.zzzzz
+•	Header: token type and signing algorithm.
+•	Payload: claims such as user ID and expiration.
+•	Signature: verifies that the token has not been tampered with.
+Security rule: JWT payloads are encoded, not encrypted. Never put passwords, API keys or other secrets inside them.
+4. Install authentication packages
+Open the VS Code terminal, activate your existing virtual environment, and run:
+python -m pip install PyJWT "pwdlib[argon2]" python-multipart
+Add these lines to requirements.txt:
+</>Plain text
+fastapi[standard]
+pydantic
+sqlalchemy
+psycopg[binary]
+python-dotenv
+PyJWT
+pwdlib[argon2]
+python-multipart
+
+pwdlib will hash passwords using Argon2. PyJWT will create and verify JWTs. python-multipart supports form-based login in FastAPI's OAuth2 flow.
+5. Update your project structure
+Keep your existing files. Add the following authentication files:
+</>Plain text
+AIPlatformGateway/
+│
+├── main.py
+├── .env
+├── requirements.txt
+│
+├── api/
+│   ├── __init__.py
+│   ├── endpoints.py
+│   └── auth.py                 NEW
+│
+├── config/
+│   ├── __init__.py
+│   ├── database.py
+│   └── security.py             NEW
+│
+├── models/
+│   ├── __init__.py
+│   ├── user_model.py
+│   └── request_model.py
+│
+├── schemas/
+│   ├── __init__.py
+│   └── request_schema.py
+│
+└── services/
+    ├── __init__.py
+    ├── auth_service.py         NEW
+    ├── request_service.py
+    └── analytics_service.py
+
+6. Configure your JWT secret
+Open .env and add the following:
+</>env
+DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/ai_platform_db
+
+JWT_SECRET_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+Generate a strong secret in the VS Code Python terminal:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+Copy the generated value into JWT_SECRET_KEY.
+Do not commit .env to GitHub.
+7. Update the User database model
+Open models/user_model.py and replace its contents:
+</>Python
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import relationship
+
+from config.database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String(100), nullable=False)
+
+    email = Column(
+        String(150),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    password_hash = Column(
+        String(255),
+        nullable=True
+    )
+
+    requests = relationship(
+        "AIRequestRecord",
+        back_populates="user"
+    )
+
+Why is password_hash nullable?
+Your database may already contain users created on Day 13. This allows those existing records to remain valid. New registrations will always receive a password hash.
+Database migration required: Base.metadata.create_all() does not add columns to an existing table. Open pgAdmin → your database → Query Tool and run:
+</>SQL
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+Run this once.
+8. Create the security configuration
+Create config/security.py:
+</>Python
+import os
+from datetime import datetime, timedelta, timezone
+
+import jwt
+from dotenv import load_dotenv
+from pwdlib import PasswordHash
+
+load_dotenv()
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY is missing from .env")
+
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+
+ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
+)
+
+password_hasher = PasswordHash.recommended()
+
+
+def hash_password(password: str) -> str:
+    return password_hasher.hash(password)
+
+
+def verify_password(
+    plain_password: str,
+    hashed_password: str
+) -> bool:
+    return password_hasher.verify(
+        plain_password,
+        hashed_password
+    )
+
+
+def create_access_token(user_id: int) -> str:
+
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+    payload = {
+        "sub": str(user_id),
+        "exp": expires_at
+    }
+
+    token = jwt.encode(
+        payload,
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    return token
+
+
+def decode_access_token(token: str):
+
+    return jwt.decode(
+        token,
+        SECRET_KEY,
+        algorithms=[ALGORITHM]
+    )
+
+9. Create authentication service
+Create services/auth_service.py:
+</>Python
+from sqlalchemy.orm import Session
+
+from models.user_model import User
+from config.security import (
+    hash_password,
+    verify_password
+)
+
+
+def register_user(
+    db: Session,
+    name: str,
+    email: str,
+    password: str
+):
+
+    existing_user = (
+        db.query(User)
+        .filter(User.email == email)
+        .first()
+    )
+
+    if existing_user:
+        return None
+
+    user = User(
+        name=name,
+        email=email,
+        password_hash=hash_password(password)
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return user
+
+
+def authenticate_user(
+    db: Session,
+    email: str,
+    password: str
+):
+
+    user = (
+        db.query(User)
+        .filter(User.email == email)
+        .first()
+    )
+
+    if not user or not user.password_hash:
+        return None
+
+    if not verify_password(
+        password,
+        user.password_hash
+    ):
+        return None
+
+    return user
+
+This separates authentication logic from your API endpoints.
+10. Add authentication schemas
+Open schemas/request_schema.py and add these classes. Keep your existing schemas.
+</>Python
+from pydantic import BaseModel, Field
+
+
+class UserRegister(BaseModel):
+    name: str = Field(
+        ...,
+        min_length=2,
+        max_length=100
+    )
+
+    email: str = Field(
+        ...,
+        min_length=5,
+        max_length=150
+    )
+
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128
+    )
+
+
+class UserPublicResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+
+The public response deliberately does not contain password_hash.
+11. Create the authentication API
+Create api/auth.py:
+</>Python
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status
+)
+
+from fastapi.security import (
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm
+)
+
+from sqlalchemy.orm import Session
+
+from config.database import get_db
+
+from config.security import (
+    create_access_token,
+    decode_access_token
+)
+
+from models.user_model import User
+
+from schemas.request_schema import (
+    UserRegister,
+    UserPublicResponse,
+    TokenResponse
+)
+
+from services.auth_service import (
+    register_user,
+    authenticate_user
+)
+
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"]
+)
+
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/auth/token"
+)
+
+
+@router.post(
+    "/register",
+    response_model=UserPublicResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def register(
+    user_data: UserRegister,
+    db: Session = Depends(get_db)
+):
+
+    user = register_user(
+        db=db,
+        name=user_data.name,
+        email=user_data.email,
+        password=user_data.password
+    )
+
+    if user is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Email already registered"
+        )
+
+    return user
+
+
+@router.post(
+    "/token",
+    response_model=TokenResponse
+)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+
+    user = authenticate_user(
+        db=db,
+        email=form_data.username,
+        password=form_data.password
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    access_token = create_access_token(user.id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired authentication token",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+    try:
+        payload = decode_access_token(token)
+
+        user_id = payload.get("sub")
+
+        if user_id is None:
+            raise credentials_exception
+
+        user_id = int(user_id)
+
+    except (Exception):
+        raise credentials_exception
+
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
+
+    if user is None:
+        raise credentials_exception
+
+    return user
+
+
+@router.get(
+    "/me",
+    response_model=UserPublicResponse
+)
+def get_my_profile(
+    current_user: User = Depends(get_current_user)
+):
+
+    return current_user
+
+Important: In the login form, enter the user's email in the field named username. That is the standard field name used by OAuth2PasswordRequestForm.
+12. Register the authentication router
+Open main.py.
+Keep your existing database imports, lifespan and existing API router. Add the authentication router:
+</>Python
+from api.auth import router as auth_router
+
+Then, after creating your FastAPI app, include it:
+</>Python
+app.include_router(auth_router)
+
+For example, the relevant part should look like:
+</>Python
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+from config.database import Base, engine
+
+from models.request_model import AIRequestRecord
+from models.user_model import User
+
+from api.endpoints import router as api_router
+from api.auth import router as auth_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    Base.metadata.create_all(bind=engine)
+
+    yield
+
+
+app = FastAPI(
+    title="AI Platform Gateway",
+    description="Backend gateway for AI model management and requests",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+app.include_router(api_router)
+app.include_router(auth_router)
+
+
+@app.get("/")
+def root():
+    return {
+        "message": "AI Platform Gateway is running"
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+
+If your existing main.py has other configuration, retain it rather than duplicating the app declaration.
+13. Protect an existing API endpoint
+Now let's apply authentication to your existing API.
+Open api/endpoints.py.
+For example, find your existing history endpoint:
+</>Python
+@router.get("/requests/history")
+def request_history(
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    return get_all_requests(
+        db,
+        limit=limit,
+        offset=offset
+    )
+Update it to:
+</>Python
+from api.auth import get_current_user
+from models.user_model import User
+
+
+@router.get("/requests/history")
+def request_history(
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return get_all_requests(
+        db,
+        limit=limit,
+        offset=offset
+    )
+
+Now this endpoint requires a valid JWT.
+For production, you should also filter the returned records by current_user.id. Authentication alone does not guarantee that users can only see their own data.
+For example, add this to services/request_service.py:
+</>Python
+def get_user_requests(
+    db: Session,
+    user_id: int,
+    limit: int = 10,
+    offset: int = 0
+):
+    return (
+        db.query(AIRequestRecord)
+        .filter(AIRequestRecord.user_id == user_id)
+        .order_by(AIRequestRecord.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+Then create a separate endpoint:
+</>Python
+@router.get("/users/me/requests")
+def my_requests(
+    limit: int = 10,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return get_user_requests(
+        db,
+        user_id=current_user.id,
+        limit=limit,
+        offset=offset
+    )
+
+This is the correct direction for a multi-user AI platform. Make sure new AI requests also save the authenticated user's ID:
+</>Python
+save_ai_request(
+    db,
+    request_data=response_data,
+    user_id=current_user.id
+)
+
+You will need to add current_user: User = Depends(get_current_user) to your POST /requests endpoint for that change.
+14. Test the authentication workflow
+Start the application:
+fastapi dev main.py
+
+Open:
+Open FastAPI Swagger documentation
+Follow these tests in order.
+Test 1 – Register a user
+POST /auth/register
+Request body:
+</>JSON
+{
+  "name": "Platform Admin",
+  "email": "admin@example.com",
+  "password": "SecurePass123!"
+}
+
+Expected response:
+</>JSON
+{
+  "id": 1,
+  "name": "Platform Admin",
+  "email": "admin@example.com"
+}
+
+Notice that the password is not returned.
+Test 2 – Login
+POST /auth/token
+In Swagger, select Try it out.
+Enter:
+Field	Value
+username	admin@example.com
+password	SecurePass123!
+Expected response:
+</>JSON
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "bearer"
+}
+
+Copy the complete access token.
+Test 3 – Authenticate in Swagger
+1.	Click the Authorize button.
+2.	Enter your email in the username field and your password in the password field.
+3.	Authorize and close the dialog.
+Swagger will use the returned bearer token for endpoints that require authentication.
+Test 4 – Get current user
+GET /auth/me
+Expected response:
+</>JSON
+{
+  "id": 1,
+  "name": "Platform Admin",
+  "email": "admin@example.com"
+}
+
+Test 5 – Test protected history
+GET /requests/history
+•	With a valid token: the endpoint should respond.
+•	Without a token: expect HTTP 401.
+•	With an invalid or expired token: expect HTTP 401.
+Test 6 – Duplicate registration
+Try registering the same email again.
+Expected status: 409 Conflict.
+15. Important backend concepts to revise
+Concept	What you should understand
+ORM	Maps Python objects to database tables
+SQLAlchemy Session	Manages database operations and transactions
+Pydantic	Validates incoming and outgoing data
+Dependency Injection	Provides shared resources such as database sessions
+JWT	Signed token used to authenticate requests
+Password Hashing	Stores password hashes instead of plaintext passwords
+HTTP 401	Authentication is missing or invalid
+HTTP 403	User is authenticated but not permitted
+HTTP 404	Requested resource does not exist
+HTTP 409	Request conflicts with existing data
+HTTP 422	Request validation failed
+Pagination	Retrieves data in manageable pages
+Database Relationship	Connects users and their AI requests
+Production security reminders:
+•	Use HTTPS in production.
+•	Keep JWT secrets outside source control.
+•	Use short-lived access tokens and consider refresh-token rotation.
+•	Add rate limiting to login and registration.
+•	Enforce user-level authorization on every private resource.
+•	Use Alembic migrations rather than relying on create_all() for schema changes.
+•	Avoid exposing internal exception messages or sensitive information.
+16. Week 2 assessment
+Backend Engineering – 20 marks
+Try answering these without referring to the lesson.
+Part A – Interview questions (10 marks)
+1.	What is the difference between FastAPI and Flask?
+2.	Why do we use Pydantic in FastAPI?
+3.	What is SQLAlchemy ORM?
+4.	What is the difference between flush() and commit()?
+5.	What is JWT authentication?
+6.	What are the three parts of a JWT?
+7.	Why should passwords be hashed?
+8.	What is dependency injection?
+9.	What is the difference between HTTP 401 and 403?
+10.	Why do we need database migrations?
+Part B – Coding exercises (10 marks)
+Exercise	Marks
+Create a new user registration endpoint	2
+Generate a JWT after successful login	2
+Create a protected /auth/me endpoint	2
+Implement user-specific request history	2
+Handle duplicate emails and invalid tokens	2
+Part C – Practical project checklist
+Day 14 completion
+0/10
+Existing FastAPI endpoints are working
+PostgreSQL connection is working
+SQLAlchemy user and request models are working
+Password hashing is implemented
+User registration is working
+JWT login is working
+Swagger Authorize is working
+Protected endpoint returns HTTP 401 without token
+User-specific request history is implemented
+No secrets are committed to GitHub
+17. Week 2 mock interview – sample answers
+Q1. Explain the architecture of your AI Platform Gateway.
+My application uses FastAPI for REST API development, Pydantic for request validation, SQLAlchemy as the ORM and PostgreSQL for persistent storage. I separated API routes, business services, schemas, database models and configuration into independent modules. I also implemented JWT authentication to protect user-specific resources.
+Q2. How does JWT authentication work in your application?
+When a user logs in, the backend verifies their password against the stored Argon2 hash. If valid, it generates a signed JWT containing the user's ID and expiration time. The client sends that token in the Authorization header. FastAPI verifies the signature and expiration before allowing access to protected endpoints.
+Q3. How would you scale this backend for multiple AI models?
+I would separate model-provider integrations into independent adapter services, introduce a model registry, use asynchronous request handling where appropriate, add Redis for caching and rate limiting, and use background workers for long-running tasks. I would also introduce centralized logging, metrics, tracing and usage-based quotas.
+18. What comes next – Day 15
+Next module
+Real LLM Integration with OpenAI
+You'll move from simulated AI responses to real model execution.
+Topics:
+•	OpenAI API integration
+•	API key management using environment variables
+•	Building an LLM service layer
+•	Sending prompts and receiving model responses
+•	Token usage and cost tracking
+•	Handling API failures, timeouts and rate limits
+•	Connecting LLM execution to your existing POST /requests endpoint
+Your Day 14 target: Complete registration, login, JWT generation and protected endpoint testing before starting Day 15.
